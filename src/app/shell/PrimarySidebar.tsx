@@ -422,6 +422,7 @@ function ScopedSidebar({
                         retry={props.relay.retry}
                         relay={connection.origin}
                         memberships={props.memberships}
+                        asksAgain
                       />
                       <Button
                         onClick={() =>
