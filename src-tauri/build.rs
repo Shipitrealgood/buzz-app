@@ -144,6 +144,7 @@ fn main() {
             "relay_archive",
             "relay_agent_memories_read",
             "relay_agent_library",
+            "registered_host_recover",
             "relay_upload_begin",
             "relay_upload_chunk",
             "relay_upload",

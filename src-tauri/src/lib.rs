@@ -770,6 +770,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         relay_agent_observer,
         relay_agent_memories_read,
         relay_agent_library,
+        relay::registered_hosts::registered_host_recover,
         relay_upload_begin,
         relay_upload_chunk,
         relay_upload,

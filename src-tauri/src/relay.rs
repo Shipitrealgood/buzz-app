@@ -25,6 +25,7 @@ use url::Url;
 mod catalog;
 mod channel_writes;
 mod kit;
+pub(crate) mod registered_hosts;
 pub(crate) use channel_writes::{
     relay_channel_publish, relay_channel_sign, relay_direct_message, relay_kit_decode,
     relay_kit_prepare,

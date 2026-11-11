@@ -832,6 +832,20 @@ fn validate_read_blob(blob: &serde_json::Value) -> Result<()> {
 #[derive(Clone)]
 pub struct IdentityHost(Arc<Mutex<Identity>>);
 impl IdentityHost {
+    /// A finite native registry operation rechecks the ready identity at every
+    /// signing/commit boundary. It never restores storage or exposes key IPC.
+    pub(crate) fn with_ready_key<T>(
+        &self,
+        expected: &str,
+        action: impl FnOnce(&[u8; 32]) -> Result<T>,
+    ) -> Result<T> {
+        let identity = self.0.lock().map_err(|_| "Identity is unavailable")?;
+        match &identity.state {
+            State::Ready(key) if key.viewer()? == expected => action(&key.0),
+            _ => Err("Active identity changed".into()),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture() -> Self {
         Self::fixture_in(State::Ready(Key::new(Zeroizing::new([1; 32]))))

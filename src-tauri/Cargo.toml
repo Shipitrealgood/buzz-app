@@ -26,6 +26,11 @@ url = "2"
 tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
+# Registry/journal source matches the audited owner-library revision.
+buzz-paired-owner = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "78232d95173b876babcee0f51b18f7c2a17dac0d" }
+buzz-ws-client = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "78232d95173b876babcee0f51b18f7c2a17dac0d" }
+nostr_registry = { package = "nostr", version = "0.44", features = ["nip44", "nip98"] }
+anyhow = "1"
 buzz-mesh-compute = { path = "../src/bundled/mesh-compute/compute" }
 buzz-nsec-backup = { path = "../crates/nsec-backup" }
 buzz-pairing = { path = "../crates/pairing" }
@@ -82,6 +87,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
+buzz-core = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "78232d95173b876babcee0f51b18f7c2a17dac0d" }
 hex = "0.4"
 tokio = { version = "1", features = ["test-util"] }
 secp256k1 = { version = "0.31", features = ["std"] }
