@@ -1,0 +1,56 @@
+# #2722 native host recovery — independent post-audit
+
+**Source review complete: no supported source defects. Acceptance remains pending native verification; this is not a merge-safe or Windows-recovery verdict.** Counts: C=0 / H=0 / M=0 / L=0. Initial review, rework rounds 0.
+
+## Pin, scope and authority
+
+- Reviewed `128cd4c2f38801d5f773d5d5ec95a1ea5594b374..5681b4ff9b67a44d89a009917a3d7c8a4ec1438f`; implementation source `c3056e099b0fbcdaf8f8b931cec85ddb7c1bd934`.
+- Workspace `buzz-app-review-20261111`, branch `feat/2722-native-host-recovery`; measured clean at handover and after tests. This report is the reviewer's only repository edit.
+- Governing checkpoint: purpose-bound native read-only registration recovery, with the [review brief](../../briefs/2722-native-host-recovery-review.md) and [execution receipt](../../executions/2722-native-host-recovery.md) read first. Conductor-supplied checkpoint-1 plan, active ledger and accepted reuse audit were inputs; later provider callbacks/UI remain outside this assignment.
+- No provisioning, pairing/revoke, deployment, agent inventory, hostd, migration/adoption, live accounts/keys/journals, services, remote relay/provider operations, UI launch, taskctl, push or merge. No implementation repairs or new verification framework.
+- Read project AGENTS/contribution rules, applicable identity/host-boundary documentation and pinned fork vision. This public artifact intentionally omits machine-specific mission paths and operational details.
+- Requested reviewer configuration: `gpt-6-astra`, `high`. Served runtime model/reasoning identity is not independently exposed; record it as unknown.
+
+## Findings and routing
+
+There are no source findings requiring a fix or prerequisite redesign. The bounded native adapter is proportionate to this checkpoint: it reuses the existing identity mutex, FI owner, registry verification, transport and journal instead of copying their protocols. No speculative provider or selected-community lifecycle framework was introduced. This is a source assessment, not a numeric runtime-correctness score.
+
+**G1 — Native verification remains an acceptance blocker (environment/evidence gap, not a discovered source defect).** The actual Buzz library, five authored native recovery tests and command-manifest test have not completed. The executor's application check/test stopped in `glib-sys` before app code because GLib >= 2.70 is unavailable; GTK/WebKit prerequisites are also missing, and only the Linux target is installed. The reviewer did not repeat that known failure, install platform tooling or substitute dependency compilation for application compilation. [Recorded failure and required gates](../../executions/2722-native-host-recovery.md#native-gates-still-required).
+
+Recommended routing: close this source-review assignment; retain checkpoint #2722 as awaiting its existing supported native environment. Run the three already named commands below there. Preserve Windows compilation/linkage, ACL/reopen and actual recovery acceptance as unverified until their own authorized checks occur. No source repair is proposed and no later provider slice is authorized by this review.
+
+```sh
+bin/cargo check -p Buzz --lib --locked -j 2
+bin/cargo test -p Buzz --lib relay::registered_hosts::tests --locked -j 2
+bin/cargo test -p Buzz --lib every_registered_command_is_listed_and_allowed --locked -j 2
+```
+
+## Coverage and adversarial conclusions
+
+| Obligation | Evidence and result |
+| --- | --- |
+| Native key custody and signout | **Read.** The sole new `with_ready_key` caller converts native bytes directly to the owner's Nostr key type; NIP-42 signing runs inside the original identity lock. `Session` captures the expected owner, checks ready state after awaits, and uses the same guard for shared recovery and cached projection. No key/string IPC or generic event-kind allowlist expansion appears in the diff. [Identity closure](../../../src-tauri/src/identity.rs#L837), [session/signing](../../../src-tauri/src/relay/registered_hosts.rs#L62), [signout contract](../../identity.md#sign-out-of-buzz). |
+| FI header and lifetime | **Read, not executed.** Native `relay_info` is reused; `assertion_for_relay` supplies the header for the actual shared WebSocket upgrade, and `during_authorization` wraps connect/auth/recovery and revalidates on completion. Its existing owner checks discovery retirement, assertion expiry/session retirement and identity admission. Followed the nested result conversion and actual `HeaderMap`, signer, `Keys`, `Registry` and `Device` signatures; no concrete API/type mismatch found. [Integration](../../../src-tauri/src/relay/registered_hosts.rs#L114), [authorization owner](../../../src-tauri/src/federated_identity/assertion.rs#L599). Native compilation remains required. |
+| Read-only registry ownership | **Read.** Calls `recover_guarded`; no `synchronize_guarded`, mutation publish, pending replay, provider callback or local-agent write was added. The shared owner retains its signed/encrypted evidence checks and journal reconciliation. [Call](../../../src-tauri/src/relay/registered_hosts.rs#L158), [pinned shared implementation](https://github.com/Shipitrealgood/buzz/blob/78232d95173b876babcee0f51b18f7c2a17dac0d/crates/buzz-paired-owner/src/registry.rs#L705). |
+| Account/community and stale caller | **Read and frontend measured.** Canonical native HTTPS origin plus current owner gates the request; the library filters the captured community/owner partition. Per-call community semantics are preserved. The typed adapter requires a distinct session-scope object and checks it after success or failure, including A → B → A and abort. No UI caller is claimed. [Native scope](../../../src-tauri/src/relay/registered_hosts.rs#L62), [adapter](../../../src/features/agents/registered-hosts.ts#L29), [tests](../../../src/features/agents/registered-hosts.test.ts#L61). |
+| Private app-local journal, reopen and one writer | **Read, native tests unrun.** OS-resolved app-local root; private Unix directory/file checks and no-follow file opening; shared Windows protection; exclusive file lock before SQLite, with Device dropped before unlock. The non-secret lock is beside the protected directory, consistent with the shared Windows script's allowed filenames. No old-journal import or alternate source path. [Journal](../../../src-tauri/src/relay/registered_hosts.rs#L184), [command root](../../../src-tauri/src/relay/registered_hosts.rs#L287), [pinned Windows policy](https://github.com/Shipitrealgood/buzz/blob/78232d95173b876babcee0f51b18f7c2a17dac0d/crates/buzz-paired-owner/windows/protect-journal.ps1). |
+| Honest evidence states | **Read and frontend measured.** Verified `paired` maps to `registered`; every host's runtime availability stays `unavailable`. Failed recovery preserves cached records under registry `unavailable`; absent/null capability yields `unsupported`. A present invalid/incompatible descriptor remains unavailable, matching the shared owner's deliberate typed `Unsupported` semantics for omitted support; no new version-classification policy is required here. [Projection](../../../src-tauri/src/relay/registered_hosts.rs#L38), [fallback](../../../src-tauri/src/relay/registered_hosts.rs#L292), [shared capability contract](https://github.com/Shipitrealgood/buzz/blob/78232d95173b876babcee0f51b18f7c2a17dac0d/crates/buzz-paired-owner/src/registry.rs#L465). |
+| Registered IPC and linked adapter | **Read.** Command is registered in the actual generic handler, build manifest and main-WebView permission; the typed adapter invokes its exact name and argument shape. Repository search found the expected single ready-key caller and no production UI caller. [Handler](../../../src-tauri/src/lib.rs#L773), [manifest](../../../src-tauri/build.rs#L147), [permission](../../../src-tauri/capabilities/default.json#L6), [invoke](../../../src/features/agents/registered-hosts.ts#L54). The actual command-manifest/IPC tests are still unrun. |
+| Native fixture and false-green boundary | **Read.** The loopback fixture uses actual shared NIP-42, signed encrypted registry replies, Device recovery/reopen and exact AUTH/REQ/CLOSE assertions; it is not a copied protocol implementation. It bypasses `Session::recover` discovery/FI admission, so even a future green run would not independently prove FI header/lifetime integration. The wrong-owner IPC case refuses before I/O. Neither the 85 mocked frontend cases nor the dependency check proves native bridge compilation or execution. [Native tests](../../../src-tauri/src/relay/registered_hosts/tests.rs#L14), [loopback fixture](../../../src-tauri/src/relay/registered_hosts/tests.rs#L111). |
+
+## Verification receipts and limits
+
+**Independently measured on reviewed HEAD, no source changes:**
+
+- `bin/pnpm exec vitest run src/features/agents/registered-hosts.test.ts src/features/relay/native.test.ts --maxWorkers=2`: **85/85 passed**, two files; Vitest 5.0.4, 2.40 seconds, exit 0. Existing relay test log names describe fixture transports. Initial sandbox invocation failed before starting tests because Hermit's cache metadata was read-only; the authorized cache-access rerun above completed successfully.
+- `git diff --check 128cd4c2..5681b4f`: passed, exit 0.
+- Read-only `git diff --quiet b910a0e03150afa968d14ea93875ad6bc97e7cb1 78232d95173b876babcee0f51b18f7c2a17dac0d -- crates/buzz-paired-owner crates/buzz-ws-client crates/buzz-core crates/buzz-sdk Cargo.toml`: passed, exit 0 in the reference repository. Confirms exact scoped reuse of the accepted owner source, not whole-repository parity.
+- Read the complete change/lockfile diff, traced affected owners and callers, inspected pinned native APIs and fixture message shapes, and checked clean source status. No named mutants were dispatched or run.
+
+**Credited executor evidence, not independently rerun:** dependency metadata/check, TypeScript, formatter and source-commit hook results from the [receipt](../../executions/2722-native-host-recovery.md#implementation-checkpoint). Source/environment continuity holds: same source commit, lockfile, checkout and installed dependencies; the later reviewed commit changes only documentation, and this reviewer changed only this report. These results retain their limited meanings.
+
+**Not run:** native Buzz compilation, native recovery tests, command-manifest test, Windows linkage/ACL/recovery, live account/history/chat recovery, and FI transport integration through the new recovery path. No real identity or journal was opened. No live relay/provider/service or desktop process was launched. No second native build or substitute test workspace was created.
+
+All reviewer-invoked test processes reached terminal status (focused Vitest exit 0). No detached fixtures/builds remain under this reviewer's ownership. Report commit hooks and final clean-state receipt are returned with the artifact commit to the conductor. G1 prevents an unconditional merge-safe verdict; `rework` below denotes outstanding required verification, not a requested implementation rewrite.
+
+quality: model=unknown effort=unknown stage=post-audit verdict=rework verify=partial commits=128cd4c2f38801d5f773d5d5ec95a1ea5594b374..5681b4ff9b67a44d89a009917a3d7c8a4ec1438f findings=C=0/H=0/M=0/L=0 rework_rounds=0
