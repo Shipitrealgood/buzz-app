@@ -270,3 +270,70 @@ it("types into a mention-heavy draft without redrawing its chips, which still fo
     new Set(renders.mock.calls.map(([props]) => props.address.id)),
   ).toEqual(new Set([first.pubkey]));
 });
+
+it("edits a channel link as one chip: Backspace, Delete and typing remove it whole, arrows step over it, undo restores it", async () => {
+  const link = "[\\#general](buzz://channel/general)";
+  const text = `see ${link} now`;
+  const start = 4,
+    end = start + link.length;
+  const h = mount(mentionDraft(text));
+  expect(h.chips()).toEqual([[link, "#general"]]);
+  const user = userEvent.setup();
+  act(() => {
+    h.input.focus();
+    h.input.setSelectionRange(end, end);
+  });
+  await user.keyboard("{ArrowLeft}");
+  expect(h.input.selectionStart).toBe(start);
+  expect(h.chips()).toEqual([[link, "#general"]]);
+  await user.keyboard("{ArrowRight}{Backspace}");
+  expect(h.draft().text).toBe("see  now");
+  expect(h.chips()).toEqual([]);
+  act(() => h.input.undo(false));
+  expect(composerMarkdown(h.draft())).toBe(text);
+  expect(h.chips()).toEqual([[link, "#general"]]);
+  act(() => h.input.setSelectionRange(start, start));
+  await user.keyboard("{Delete}");
+  expect(h.draft().text).toBe("see  now");
+  act(() => h.input.undo(false));
+  act(() => h.input.setSelectionRange(start - 1, end + 1));
+  await user.keyboard("x");
+  expect(h.draft().text).toBe("seexnow");
+  act(() => h.input.undo(false));
+  expect(composerMarkdown(h.draft())).toBe(text);
+  act(() => h.input.undo(true));
+  expect(h.draft().text).toBe("seexnow");
+});
+
+it("restores a channel link saved as editable text as one chip", async () => {
+  const link = "[\\#general](buzz://channel/general)";
+  const end = 4 + link.length;
+  const h = mount(
+    mentionDraft({
+      text: `see ${link} now`,
+      recipients: [],
+      document: {
+        version: 1,
+        content: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "see " },
+                { type: "token", attrs: { source: link, editAsText: true } },
+                { type: "text", text: " now" },
+              ],
+            },
+          ],
+        },
+      },
+    }),
+  );
+  act(() => {
+    h.input.focus();
+    h.input.setSelectionRange(end, end);
+  });
+  await userEvent.setup().keyboard("{Backspace}");
+  expect(h.draft().text).toBe("see  now");
+});
