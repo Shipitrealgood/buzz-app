@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { MESSAGE_TOKENS_TAG, signedMessageTokenTags } from "./message-tokens";
-import * as tauri from "@tauri-apps/api/core";
 import { Context } from "@deepseek-ai/cordis";
 import { PluginRuntime } from "../../plugins/runtime";
 import { ConversationService } from "../conversation/service";
@@ -12131,10 +12130,9 @@ it("compares before local edits and Send even if the storage event has not arriv
 it("saves a content-free conflict trace and preserves Keep my draft", async () => {
   const h = mount();
   h.fill("Private local body");
-  const native = vi.spyOn(tauri, "isTauri").mockReturnValue(true);
-  const invoke = vi
-    .spyOn(tauri, "invoke")
-    .mockRejectedValue(new Error("unavailable"));
+  const invoke = vi.fn().mockRejectedValue(new Error("unavailable"));
+  vi.stubGlobal("isTauri", true);
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
   try {
     localStorage.setItem(
       'buzz-view.v1:["scope","draft:channel"]',
@@ -12166,8 +12164,7 @@ it("saves a content-free conflict trace and preserves Keep my draft", async () =
     });
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
   } finally {
-    native.mockRestore();
-    invoke.mockRestore();
+    vi.unstubAllGlobals();
   }
 });
 

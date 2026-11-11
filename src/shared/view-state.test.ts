@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import * as tauri from "@tauri-apps/api/core";
 import {
   clearView,
   clearViewScope,
@@ -199,8 +198,9 @@ it("uses one raw read with unchanged fallback and falsy-value semantics", () => 
 });
 
 it("records the write phase when a subscriber fails after storage accepts a draft", async () => {
-  vi.spyOn(tauri, "isTauri").mockReturnValue(true);
-  const invoke = vi.spyOn(tauri, "invoke").mockResolvedValue(undefined);
+  const invoke = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("isTauri", true);
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
   const stop = subscribeView("scope", () => {
     throw Error("private error");
   });
@@ -217,5 +217,6 @@ it("records the write phase when a subscriber fails after storage accepts a draf
     expect(JSON.stringify(payload)).not.toContain("private");
   } finally {
     stop();
+    vi.unstubAllGlobals();
   }
 });
