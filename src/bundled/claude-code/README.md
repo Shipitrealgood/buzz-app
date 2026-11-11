@@ -8,6 +8,6 @@ Create agents that run Claude on your computer and answer you in Buzz. Each agen
 2. Choose **New agent** → **Create a new agent**, and pick **Claude** as the **Harness**.
 3. Mention your agent in a conversation to give it work.
 
-Open **Settings** → **Claude** to manage the saved key. Focus or click the masked field, or use its chevron, to open **Edit / Copy**. **Edit** shows the existing key with inline **Cancel / Save** buttons; both return to the masked view. Copy does not reveal the key. The trash button (**Remove key**) deletes it after confirmation. Key management also works when Claude needs installation or an update.
+Open **Settings** → **Claude** to manage the saved key. Focus or click the masked field, or use its chevron, to open **Replace / Remove**. Replacement starts blank and masked, with inline **Cancel / Save** buttons. Settings cannot reveal or copy the saved key. **Remove** deletes it from secure storage after confirmation; the menu is unavailable during replacement. Key management also works when Claude needs installation or an update.
 
-Removing a key does not revoke it at Anthropic. New local Claude sessions and security reviews need a key again; a turn already running can finish. Agents on another computer use that computer's credentials.
+New local Claude sessions and security reviews need a key again; a turn already running can finish. Agents on another computer use that computer's credentials.

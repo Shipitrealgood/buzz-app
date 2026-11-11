@@ -131,27 +131,6 @@ async fn refuses_what_is_not_an_anthropic_key() {
 }
 
 #[tokio::test]
-async fn explicit_reveal_reads_the_current_store_and_never_falls_back_on_read_failure() {
-    let store = Arc::new(FakeStore::default());
-    let key = host(&store);
-    key.set("sk-ant-saved").await.unwrap();
-    assert_eq!(key.reveal().await.unwrap().as_deref(), Some("sk-ant-saved"));
-    *store.key.lock().unwrap() = Some("sk-ant-replaced-elsewhere".into());
-    assert_eq!(
-        key.reveal().await.unwrap().as_deref(),
-        Some("sk-ant-replaced-elsewhere")
-    );
-    *store.unreadable.lock().unwrap() = true;
-    assert_eq!(key.reveal().await, Err("locked".into()));
-    *store.unreadable.lock().unwrap() = false;
-    *store.key.lock().unwrap() = None;
-    assert_eq!(key.reveal().await.unwrap(), None);
-    key.set("sk-ant-new").await.unwrap();
-    key.clear().await.unwrap();
-    assert_eq!(key.reveal().await.unwrap(), None);
-}
-
-#[tokio::test]
 async fn an_unreadable_store_is_an_error_and_is_read_again() {
     let store = Arc::new(FakeStore::default());
     *store.key.lock().unwrap() = Some("sk-ant-k".into());

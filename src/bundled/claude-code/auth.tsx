@@ -1,7 +1,7 @@
 // How Buzz's Claude authenticates: with an Anthropic API key, pasted in
 // setup and kept by native code in the OS credential store (`claude_key.rs`),
 // which gives it to every `claude` as `ANTHROPIC_API_KEY`, never as an
-// argument. Settings reads it only for an explicit Edit or Copy action.
+// argument, and never back to the app.
 //
 // Builds can replace this one file with another way to sign in, so the rest
 // of the plugin reaches authentication only through its exports: keep their
@@ -51,8 +51,8 @@ async function output(spawn: Spawn, id: string) {
   return stdout;
 }
 
-/** The native store keeps the key out of ordinary setup and process calls.
- * Only the key-management Settings view reads its value into the UI. */
+/** The native store never returns saved credentials to setup or Settings.
+ * Native code injects the key into the Claude processes that request it. */
 const nativeStore = ():
   | Readonly<{
       /** Whether a key is saved. */
@@ -60,7 +60,6 @@ const nativeStore = ():
       /** Saves the key without echoing it. */
       save(key: string): Promise<void>;
       clear(): Promise<void>;
-      reveal(): Promise<string | null>;
     }>
   | undefined =>
   isTauri()
@@ -68,7 +67,6 @@ const nativeStore = ():
         status: async () => (await invoke("claude_api_key_status")) === true,
         save: (value) => invoke("claude_api_key_set", { value }),
         clear: () => invoke("claude_api_key_clear"),
-        reveal: () => invoke("claude_api_key_reveal"),
       }
     : undefined;
 
@@ -155,12 +153,6 @@ export class ClaudeAuth {
       this.saved = undefined;
     }
     for (const listener of this.listeners) listener();
-  }
-
-  /** Reads the saved value on demand without retaining it in the auth owner. */
-  async reveal() {
-    if (!this.store) throw new Error("Claude runs only in the desktop app");
-    return (await this.store.reveal()) ?? undefined;
   }
 
   /** `spawn`, starting each `claude` with the saved key, which native code

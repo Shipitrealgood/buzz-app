@@ -168,7 +168,6 @@
     "allow-claude-api-key-status",
     "allow-claude-api-key-set",
     "allow-claude-api-key-clear",
-    "allow-claude-api-key-reveal",
     "allow-jev-classifier-status",
     "allow-jev-classifier-set-key",
     "allow-jev-classifier-clear-key",

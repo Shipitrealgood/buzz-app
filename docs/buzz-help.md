@@ -978,17 +978,15 @@ available rather than silently discarding it.
   Claude runs with an Anthropic API key pasted under **Anthropic API key**
   there, once for every local Claude agent. With the Claude plugin enabled,
   **Settings → Claude** starts with a masked, read-only saved key. The
-  field opens its **Edit / Copy** menu when focused or clicked; the chevron
-  also opens it. **Edit** shows the existing key
-  for editing, with small **Cancel / Save** buttons inside the field.
-  **Save** updates a changed, non-empty key and returns to the masked view;
-  **Cancel** discards the draft. Copy works without revealing.
-  Leaving the page discards its displayed value and draft.
-  The trash button (**Remove key**) is unavailable while editing. Otherwise it
-  deletes the saved key after confirmation.
+  field opens its **Replace / Remove** menu when focused or clicked;
+  the chevron also opens it. **Replace** opens a blank, masked field with small
+  **Cancel / Save** buttons inside it. **Save** stores a non-empty replacement
+  and returns to the masked view; **Cancel** discards the draft. Settings cannot
+  reveal or copy the saved key. Leaving the page discards the replacement draft.
+  **Remove** deletes the saved key from this device’s secure storage after
+  confirmation. Key actions are unavailable while replacing the key.
   You can also add or remove a key
-  if the Claude integration needs installation or an update. Removing
-  it does not revoke it at Anthropic. New local Claude sessions and security
+  if the Claude integration needs installation or an update. New local Claude sessions and security
   reviews need a key again; a turn already running can finish.
   When creating a Claude agent or editing
   one that runs on this computer, click **Add key** beside **Harness** to open

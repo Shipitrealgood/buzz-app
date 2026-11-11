@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TrashIcon } from "../../shared/design-system/icons";
+import { isApplePlatform } from "../../features/shortcuts/format";
 import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 import { Button } from "../../shared/design-system/ui/Button";
 import { Header, InlineHeader } from "../../shared/design-system/ui/Header";
-import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { SignIn } from "./auth";
@@ -28,7 +27,10 @@ export function ClaudeSettings({
   const [clearError, setClearError] = useState("");
   const [saving, setSaving] = useState(false);
   const section = useRef<HTMLElement>(null);
-  const removeButton = useRef<HTMLButtonElement>(null);
+  const actionsButton = useRef<HTMLButtonElement>(null);
+  const storage = isApplePlatform(navigator.platform)
+    ? "this Mac’s Keychain"
+    : "this device’s secure storage";
   const check = useCallback(async () => {
     const current = ++request.current;
     setChecking(true);
@@ -104,24 +106,14 @@ export function ClaudeSettings({
                   active={active}
                   disabled={disabled}
                   conceal={confirm || clearing || !!readError || !active()}
-                  onMissing={check}
                   onSavingChange={setSaving}
-                  removeAction={(editing) => (
-                    <IconButton
-                      ref={removeButton}
-                      variant="destructive"
-                      aria-label="Remove key"
-                      title="Remove key"
-                      icon={<TrashIcon size={16} aria-hidden="true" />}
-                      disabled={disabled || editing}
-                      onClick={() => {
-                        if (active()) {
-                          setClearError("");
-                          setConfirm(true);
-                        }
-                      }}
-                    />
-                  )}
+                  trigger={actionsButton}
+                  onRemove={() => {
+                    if (active()) {
+                      setClearError("");
+                      setConfirm(true);
+                    }
+                  }}
                 />
               ) : (
                 <SignIn
@@ -138,11 +130,11 @@ export function ClaudeSettings({
       {confirm && (
         <AlertDialog
           title="Remove Claude API key?"
-          description="Removing this key prevents new local Claude sessions from using it. A turn already running can finish. This removes the key from Buzz on this computer; it does not revoke it at Anthropic."
+          description={`This removes the key from ${storage}. New local Claude sessions will need a key. A turn already running can finish.`}
           pending={clearing}
           onClose={() => setConfirm(false)}
           finalFocus={() =>
-            removeButton.current ??
+            actionsButton.current ??
             section.current?.querySelector<HTMLInputElement>("input") ??
             section.current
           }

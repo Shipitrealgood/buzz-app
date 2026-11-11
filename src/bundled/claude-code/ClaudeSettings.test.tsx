@@ -22,8 +22,6 @@ const native = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 const notify = vi.hoisted(() => vi.fn());
-const clipboard = vi.hoisted(() => vi.fn());
-vi.mock("../../shared/clipboard", () => ({ writeClipboardText: clipboard }));
 vi.mock("../../shared/design-system/ui/Toast", () => ({
   useToastNotification: () => notify,
 }));
@@ -33,13 +31,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 beforeEach(() => {
   notify.mockClear();
-  clipboard.mockReset().mockResolvedValue(undefined);
   native.saved = true;
   native.value = "sk-ant-saved";
   native.invoke.mockReset().mockImplementation(async (command, args) => {
     if (command === "claude_api_key_status") return native.saved;
-    if (command === "claude_api_key_reveal")
-      return native.saved ? native.value : null;
     if (command === "claude_api_key_set") {
       if (!args.value.startsWith("sk-ant-"))
         throw "That is not an Anthropic API key.";
@@ -91,14 +86,21 @@ async function action(name: string, user = userEvent.setup()) {
   await user.click(await screen.findByRole("menuitem", { name }));
 }
 
-async function editKey(user = userEvent.setup()) {
-  const input = await savedKey();
-  await action("Edit", user);
+async function replaceKey(user = userEvent.setup()) {
+  await savedKey();
+  await action("Replace", user);
+  const input = screen.getByLabelText("Replacement API key");
   await waitFor(() => expect(input).not.toHaveAttribute("readonly"));
   return input;
 }
 
+async function removeKey(user = userEvent.setup()) {
+  await action("Remove", user);
+  return screen.getByRole("alertdialog");
+}
+
 it("adds, confirms removal, and adds again without an installed runtime", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   native.saved = false;
   const user = userEvent.setup();
   const { spawn } = fixture();
@@ -108,14 +110,23 @@ it("adds, confirms removal, and adds again without an installed runtime", async 
   await user.type(add, "sk-ant-first");
   await user.click(screen.getByRole("button", { name: "Save key" }));
   await savedKey();
-  await user.click(screen.getByRole("button", { name: "Remove key" }));
+  const confirmation = await removeKey(user);
+  expect(confirmation).toHaveAccessibleDescription(
+    "This removes the key from this Mac’s Keychain. New local Claude sessions will need a key. A turn already running can finish.",
+  );
   await user.click(
     within(screen.getByRole("alertdialog")).getByRole("button", {
       name: "Cancel",
     }),
   );
   expect(native.saved).toBe(true);
-  await user.click(screen.getByRole("button", { name: "Remove key" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "API key actions" }),
+    ).toHaveFocus(),
+  );
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  await removeKey(user);
   await user.click(
     within(screen.getByRole("alertdialog")).getByRole("button", {
       name: "Remove key",
@@ -141,13 +152,13 @@ it.each(["Save", "Remove key"])(
     const refresh = vi.spyOn(setup, "check").mockReturnValueOnce(pending);
     try {
       if (operation === "Save") {
-        const input = await editKey(user);
+        const input = await replaceKey(user);
         fireEvent.change(input, { target: { value: "sk-ant-new" } });
         await user.click(screen.getByRole("button", { name: "Save" }));
         expect(notify).toHaveBeenCalledWith("Saved", "success");
       } else {
         await savedKey();
-        await user.click(screen.getByRole("button", { name: operation }));
+        await removeKey(user);
         await user.click(
           within(screen.getByRole("alertdialog")).getByRole("button", {
             name: operation,
@@ -184,7 +195,7 @@ it("keeps a failed removal open for retry and prevents duplicate writes while pe
     await pending;
     throw "Keychain access was denied.";
   });
-  await user.click(screen.getByRole("button", { name: "Remove key" }));
+  await removeKey(user);
   const dialog = screen.getByRole("alertdialog");
   const remove = within(dialog).getByRole("button", { name: "Remove key" });
   try {
@@ -207,10 +218,10 @@ it("keeps a failed removal open for retry and prevents duplicate writes while pe
   expect(native.saved).toBe(false);
 });
 
-it("preserves a rejected edit and blocks other key actions until saving finishes", async () => {
+it("preserves a rejected replacement and blocks other actions while saving", async () => {
   const user = userEvent.setup();
   fixture();
-  const input = await editKey(user);
+  const input = await replaceKey(user);
   fireEvent.change(input, { target: { value: "invalid-key" } });
   let release!: () => void;
   const pending = new Promise<void>((resolve) => {
@@ -222,7 +233,9 @@ it("preserves a rejected edit and blocks other key actions until saving finishes
   });
   try {
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(screen.getByRole("button", { name: "Remove key" })).toBeDisabled();
+    expect(
+      screen.queryByRole("menuitem", { name: "Remove" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(
       screen.queryByRole("button", { name: "API key actions" }),
@@ -244,7 +257,7 @@ it("preserves a rejected edit and blocks other key actions until saving finishes
   expect(
     screen.queryByRole("button", { name: "Save" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Remove key" })).toBeEnabled();
+  expect(await removeKey(user)).toBeInTheDocument();
 });
 
 it("treats a credential read failure as unknown and offers retry", async () => {
@@ -256,7 +269,7 @@ it("treats a credential read failure as unknown and offers retry", async () => {
     "Secure storage is unavailable",
   );
   expect(
-    screen.queryByRole("button", { name: "Remove key" }),
+    screen.queryByRole("button", { name: "API key actions" }),
   ).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Save key" })).toHaveAttribute(
     "aria-disabled",
@@ -270,7 +283,7 @@ it("rejects writes from a retired settings visit", async () => {
   let active = true;
   const user = userEvent.setup();
   fixture(() => active);
-  const input = await editKey(user);
+  const input = await replaceKey(user);
   fireEvent.change(input, { target: { value: "sk-ant-new" } });
   active = false;
   fireEvent.keyDown(input, { key: "Enter" });
@@ -298,7 +311,7 @@ it("ignores an older credential read that resolves after removal", async () => {
   fixture();
   try {
     await screen.findByLabelText("Saved API key");
-    await user.click(screen.getByRole("button", { name: "Remove key" }));
+    await removeKey(user);
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "Remove key",
@@ -317,7 +330,7 @@ it("checks visit ownership again before confirming removal", async () => {
   const user = userEvent.setup();
   fixture(() => active);
   await screen.findByLabelText("Saved API key");
-  await user.click(screen.getByRole("button", { name: "Remove key" }));
+  await removeKey(user);
   active = false;
   await user.click(
     within(screen.getByRole("alertdialog")).getByRole("button", {
@@ -332,34 +345,36 @@ it("checks visit ownership again before confirming removal", async () => {
   ).toBe(false);
 });
 
-it("starts read-only and masked, with Edit and Copy as its only menu actions", async () => {
+it("offers replacement and confirmed removal without reading the saved key", async () => {
   const user = userEvent.setup();
   fixture();
   const input = await savedKey();
   expect(input).toHaveAttribute("readonly");
   expect(input).toHaveAttribute("type", "password");
   expect(input).not.toHaveValue(native.value);
+  fireEvent.change(input, { target: { value: "sk-ant-unwanted-edit" } });
+  expect(input).not.toHaveValue("sk-ant-unwanted-edit");
+  screen.getByRole("button", { name: "API key actions" }).focus();
+  await user.keyboard("{Enter}");
+  await screen.findByRole("menuitem", { name: "Replace" });
+  expect(
+    screen.getAllByRole("menuitem").map((item) => item.textContent),
+  ).toEqual(["Replace", "Remove"]);
+  await user.click(screen.getByRole("menuitem", { name: "Replace" }));
+  expect(screen.getByLabelText("Replacement API key")).toHaveValue("");
   expect(
     native.invoke.mock.calls.every(
       ([command]) => command === "claude_api_key_status",
     ),
   ).toBe(true);
-  fireEvent.change(input, { target: { value: "sk-ant-unwanted-edit" } });
-  expect(input).not.toHaveValue("sk-ant-unwanted-edit");
-  screen.getByRole("button", { name: "API key actions" }).focus();
-  await user.keyboard("{Enter}");
-  await screen.findByRole("menuitem", { name: "Edit" });
-  expect(
-    screen.getAllByRole("menuitem").map((item) => item.textContent),
-  ).toEqual(["Edit", "Copy"]);
 });
 
-it("opens actions from pointer or keyboard input focus without reopening on dismissal or Edit", async () => {
+it("opens replacement from input focus without trapping reverse Tab or reopening on Cancel", async () => {
   const user = userEvent.setup();
   fixture();
   const input = await savedKey();
   await user.click(input);
-  await screen.findByRole("menuitem", { name: "Edit" });
+  await screen.findByRole("menuitem", { name: "Replace" });
   await user.keyboard("{Escape}");
   await waitFor(() =>
     expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
@@ -374,82 +389,25 @@ it("opens actions from pointer or keyboard input focus without reopening on dism
   expect(screen.getByRole("button", { name: "Before settings" })).toHaveFocus();
   await user.tab();
   await waitFor(() =>
-    expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus(),
+    expect(screen.getByRole("menuitem", { name: "Replace" })).toHaveFocus(),
   );
   await user.keyboard("{Enter}");
-  await waitFor(() => expect(input).toHaveValue(native.value));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Replacement API key")).toHaveValue(""),
+  );
   expect(input).toHaveFocus();
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(input).not.toHaveValue(native.value);
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   await user.click(input);
-  await screen.findByRole("menuitem", { name: "Copy" });
+  await screen.findByRole("menuitem", { name: "Replace" });
 });
 
-it("offers retry through the menu after denied Edit", async () => {
-  const user = userEvent.setup();
-  fixture();
-  const input = await savedKey();
-  native.invoke.mockRejectedValueOnce("Keychain access was denied.");
-  await action("Edit", user);
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Keychain access was denied.",
-  );
-  expect(input).not.toHaveValue(native.value);
-  expect(input).toHaveAttribute("readonly");
-  await editKey(user);
-  expect(input).toHaveValue(native.value);
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-});
-
-it.each([
-  ["Edit", "removal"],
-  ["Copy", "removal"],
-  ["Edit", "retirement"],
-  ["Edit", "closing"],
-])("discards pending %s after %s", async (operation, exit) => {
-  let active = true;
-  const user = userEvent.setup();
-  const { setup } = fixture(() => active);
-  await savedKey();
-  let release!: (value: string) => void;
-  const pending = new Promise<string>((resolve) => {
-    release = resolve;
-  });
-  const read = vi.spyOn(setup.auth, "reveal").mockReturnValueOnce(pending);
-  try {
-    await action(operation, user);
-    await waitFor(() => expect(read).toHaveBeenCalledOnce());
-    expect(screen.getByLabelText("Saved API key")).toHaveAttribute("readonly");
-    if (exit === "removal")
-      await user.click(screen.getByRole("button", { name: "Remove key" }));
-    else if (exit === "retirement") active = false;
-    else cleanup();
-  } finally {
-    await act(async () => release("sk-ant-late"));
-  }
-  if (exit === "closing")
-    render(<ClaudeSettings setup={setup} active={() => true} />);
-  const input = await screen.findByLabelText("Saved API key");
-  expect(input).not.toHaveValue("sk-ant-late");
-  expect(input).toHaveAttribute("readonly");
-  expect(clipboard).not.toHaveBeenCalled();
-  expect(notify).not.toHaveBeenCalled();
-  if (exit === "removal")
-    await user.click(
-      within(screen.getByRole("alertdialog")).getByRole("button", {
-        name: "Cancel",
-      }),
-    );
-  expect(input).toHaveAttribute("type", "password");
-  expect(input).not.toHaveValue("sk-ant-late");
-});
-
-it("discards edit values and drafts when credentials change elsewhere", async () => {
+it("discards a replacement draft when credentials change elsewhere", async () => {
   const user = userEvent.setup();
   const { setup } = fixture();
-  const input = await editKey(user);
+  const input = await replaceKey(user);
   fireEvent.change(input, { target: { value: "sk-ant-draft" } });
   await act(async () => {
     await setup.auth.save("sk-ant-other");
@@ -464,46 +422,36 @@ it("discards edit values and drafts when credentials change elsewhere", async ()
   ).not.toBeInTheDocument();
 });
 
-it("returns to add-key setup when a requested key no longer exists", async () => {
-  const user = userEvent.setup();
-  fixture();
-  await savedKey();
-  native.saved = false;
-  await action("Edit", user);
-  await screen.findByLabelText("Anthropic API key");
-  expect(screen.queryByLabelText("Saved API key")).not.toBeInTheDocument();
-});
-
-it("does not carry an edited key into a reopened page or fetch it at mount", async () => {
+it("discards replacement drafts when the page closes", async () => {
   const user = userEvent.setup();
   const { setup } = fixture();
-  await editKey(user);
-  const reads = native.invoke.mock.calls.filter(
-    ([command]) => command === "claude_api_key_reveal",
-  ).length;
+  const draft = await replaceKey(user);
+  fireEvent.change(draft, { target: { value: "sk-ant-draft" } });
   cleanup();
   render(<ClaudeSettings setup={setup} active={() => true} />);
   const input = await savedKey();
   expect(input).not.toHaveValue(native.value);
+  expect(input).not.toHaveValue("sk-ant-draft");
   expect(input).toHaveAttribute("readonly");
   expect(
-    native.invoke.mock.calls.filter(
-      ([command]) => command === "claude_api_key_reveal",
+    native.invoke.mock.calls.every(
+      ([command]) => command === "claude_api_key_status",
     ),
-  ).toHaveLength(reads);
+  ).toBe(true);
+  expect(await replaceKey(user)).toHaveValue("");
 });
 
-it("edits the saved key, gates Save, and discards the draft on Cancel", async () => {
+it("starts replacement blank, gates Save, and discards the draft on Cancel", async () => {
   const user = userEvent.setup();
   fixture();
-  const input = await editKey(user);
-  expect(input).toHaveValue(native.value);
-  expect(input).toHaveAttribute("type", "text");
+  const input = await replaceKey(user);
+  expect(input).toHaveValue("");
+  expect(input).toHaveAttribute("type", "password");
   await waitFor(() => expect(input).toHaveFocus());
   const save = screen.getByRole("button", { name: "Save" });
-  const remove = screen.getByRole("button", { name: "Remove key" });
-  expect(remove).toBeDisabled();
-  await user.click(remove);
+  expect(
+    screen.queryByRole("menuitem", { name: "Remove" }),
+  ).not.toBeInTheDocument();
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "API key actions" }),
@@ -516,7 +464,7 @@ it("edits the saved key, gates Save, and discards the draft on Cancel", async ()
   fireEvent.change(input, { target: { value: "sk-ant-draft" } });
   expect(save).toBeEnabled();
   fireEvent.change(input, { target: { value: native.value } });
-  expect(save).toBeDisabled();
+  expect(save).toBeEnabled();
   fireEvent.change(input, { target: { value: "sk-ant-draft" } });
   expect(native.value).toBe("sk-ant-saved");
   await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -525,7 +473,7 @@ it("edits the saved key, gates Save, and discards the draft on Cancel", async ()
   expect(input).not.toHaveValue(native.value);
   expect(save).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "API key actions" })).toBeEnabled();
-  expect(remove).toBeEnabled();
+  expect(await removeKey(user)).toBeInTheDocument();
   expect(
     native.invoke.mock.calls.some(
       ([command]) => command === "claude_api_key_set",
@@ -536,7 +484,7 @@ it("edits the saved key, gates Save, and discards the draft on Cancel", async ()
 it("saves a replacement with Enter after composition ends", async () => {
   const user = userEvent.setup();
   fixture();
-  const input = await editKey(user);
+  const input = await replaceKey(user);
   fireEvent.change(input, { target: { value: "sk-ant-new" } });
   fireEvent.keyDown(input, { key: "Enter", isComposing: true });
   expect(
@@ -554,30 +502,4 @@ it("saves a replacement with Enter after composition ends", async () => {
   expect(native.value).toBe("sk-ant-new");
   expect(input).toHaveAttribute("type", "password");
   expect(input).toHaveAttribute("readonly");
-});
-
-it("retries clipboard failures and copies the current key without revealing it", async () => {
-  const user = userEvent.setup();
-  fixture();
-  const input = await savedKey();
-  clipboard.mockRejectedValueOnce("Clipboard unavailable");
-  await action("Copy", user);
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Clipboard unavailable",
-  );
-  expect(notify).not.toHaveBeenCalled();
-  expect(input).not.toHaveValue(native.value);
-  native.value = "sk-ant-current";
-  await action("Copy", user);
-  await waitFor(() => expect(clipboard).toHaveBeenLastCalledWith(native.value));
-  expect(notify).toHaveBeenCalledWith("API key copied", "success");
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  expect(input).not.toHaveValue(native.value);
-  expect(input).toHaveAttribute("readonly");
-  expect(input).toHaveAttribute("type", "password");
-  expect(
-    native.invoke.mock.calls.some(
-      ([command]) => command === "claude_api_key_set",
-    ),
-  ).toBe(false);
 });

@@ -12,7 +12,6 @@ const state = vi.hoisted(() => ({
   asked: 0,
   saves: [] as string[],
   clears: 0,
-  reveals: 0,
   refusals: [] as string[],
 }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -21,12 +20,6 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (command === "claude_api_key_status") {
       state.asked += 1;
       return state.saved;
-    }
-    if (command === "claude_api_key_reveal") {
-      state.reveals++;
-      const refusal = state.refusals.shift();
-      if (refusal) throw refusal;
-      return state.saved ? (state.saves.at(-1) ?? KEY) : null;
     }
     if (command === "claude_api_key_clear") {
       state.clears++;
@@ -50,7 +43,6 @@ function store(saved = true) {
     asked: 0,
     saves: [],
     clears: 0,
-    reveals: 0,
     refusals: [],
   });
 }
@@ -205,24 +197,6 @@ it("preserves authorization on a failed removal and notifies only after retry su
   await auth.clear();
   expect(told).toHaveBeenCalledOnce();
   await expect(auth.check()).resolves.toBeUndefined();
-});
-
-it("reads a saved key only on explicit reveal without notifying running sessions", async () => {
-  const { spawn } = host();
-  const auth = new ClaudeAuth(spawn);
-  const told = vi.fn();
-  auth.subscribe(told);
-  await auth.check();
-  expect(state.reveals).toBe(0);
-  await expect(auth.reveal()).resolves.toBe(KEY);
-  await auth.save("sk-ant-new");
-  told.mockClear();
-  await expect(auth.reveal()).resolves.toBe("sk-ant-new");
-  state.saved = false;
-  await expect(auth.reveal()).resolves.toBeUndefined();
-  state.refusals.push("Keychain access was denied.");
-  await expect(auth.reveal()).rejects.toBe("Keychain access was denied.");
-  expect(told).not.toHaveBeenCalled();
 });
 
 it("links a turn that failed for want of a working key to Settings", async () => {

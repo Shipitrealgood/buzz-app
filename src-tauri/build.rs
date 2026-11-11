@@ -222,7 +222,6 @@ fn main() {
             "claude_api_key_status",
             "claude_api_key_set",
             "claude_api_key_clear",
-            "claude_api_key_reveal",
             "jev_classifier_status",
             "jev_classifier_set_key",
             "jev_classifier_clear_key",
