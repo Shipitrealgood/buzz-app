@@ -160,6 +160,49 @@ it("adds, edits, confirms removal, and adds again without an installed runtime",
   expect(native.saved).toBe(true);
 });
 
+it.each(["Save", "Remove key"])(
+  "keeps successful %s separate from a failed runtime refresh",
+  async (operation) => {
+    const user = userEvent.setup();
+    const { setup } = fixture();
+    let reject!: (reason: string) => void;
+    const pending = new Promise<void>((_, fail) => {
+      reject = fail;
+    });
+    const refresh = vi.spyOn(setup, "check").mockReturnValueOnce(pending);
+    try {
+      if (operation === "Save") {
+        const input = await editKey(user);
+        fireEvent.change(input, { target: { value: "sk-ant-new" } });
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(notify).toHaveBeenCalledWith("Saved", "success");
+      } else {
+        await savedKey();
+        await user.click(screen.getByRole("button", { name: operation }));
+        await user.click(
+          within(screen.getByRole("alertdialog")).getByRole("button", {
+            name: operation,
+          }),
+        );
+      }
+      await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    } finally {
+      await act(async () => reject("Runtime status unavailable"));
+    }
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    if (operation === "Save") {
+      expect(native.value).toBe("sk-ant-new");
+      expect(screen.getByLabelText("Saved API key")).toHaveAttribute(
+        "readonly",
+      );
+    } else {
+      expect(native.saved).toBe(false);
+      expect(screen.getByLabelText("Anthropic API key")).toBeInTheDocument();
+    }
+  },
+);
+
 it("keeps a failed removal open for retry and prevents duplicate writes while pending", async () => {
   const user = userEvent.setup();
   fixture();

@@ -146,7 +146,8 @@ export function SavedClaudeKey({
       saved = true;
       reset();
       notify("Saved", "success");
-      await setup.check();
+      // A runtime refresh cannot undo the completed credential save.
+      await setup.check().catch(() => undefined);
     } catch (failure) {
       if (active()) setError(String(failure));
     } finally {

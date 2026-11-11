@@ -59,7 +59,8 @@ export function ClaudeSettings({
       await setup.auth.clear();
       setConfigured(false);
       setConfirm(false);
-      await setup.check();
+      // A runtime refresh cannot undo the completed credential removal.
+      await setup.check().catch(() => undefined);
     } catch (error) {
       setClearError(String(error));
     } finally {
