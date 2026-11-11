@@ -51,6 +51,7 @@ export function SavedClaudeKey({
   const writing = useRef(false);
   const input = useRef<HTMLInputElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   const notify = useToastNotification();
   const editing = !conceal && value !== undefined;
   const changed = editing && draft.trim() !== value;
@@ -230,7 +231,15 @@ export function SavedClaudeKey({
                     readOnly={!editing || disabled || saving || conceal}
                     autoComplete="off"
                     spellCheck={false}
-                    onFocus={openActions}
+                    onFocus={(event) => {
+                      const from = event.relatedTarget;
+                      if (
+                        from === trigger.current ||
+                        (from instanceof Node && menu.current?.contains(from))
+                      )
+                        return;
+                      openActions();
+                    }}
                     onClick={openActions}
                     onValueChange={(next) => {
                       if (
@@ -256,6 +265,7 @@ export function SavedClaudeKey({
                   />
                 </InputGroup>
                 <MenuPopup
+                  ref={menu}
                   align="end"
                   size="compact"
                   finalFocus={() => trigger.current ?? input.current}

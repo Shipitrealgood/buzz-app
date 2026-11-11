@@ -66,7 +66,9 @@ function fixture(active = () => true) {
   const setup = new ClaudeSetup(spawn);
   render(
     <StrictMode>
+      <button type="button">Before settings</button>
       <ClaudeSettings setup={setup} active={active} />
+      <button type="button">After settings</button>
     </StrictMode>,
   );
   return { setup, spawn };
@@ -366,8 +368,14 @@ it("opens actions from pointer or keyboard input focus without reopening on dism
     expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
   );
   const trigger = screen.getByRole("button", { name: "API key actions" });
+  trigger.focus();
   expect(trigger).toHaveFocus();
   await user.tab({ shift: true });
+  expect(input).toHaveFocus();
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  await user.tab({ shift: true });
+  expect(screen.getByRole("button", { name: "Before settings" })).toHaveFocus();
+  await user.tab();
   await waitFor(() =>
     expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus(),
   );
