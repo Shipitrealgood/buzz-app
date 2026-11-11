@@ -29,3 +29,19 @@ Measured: Python PyYAML parses the workflow; assertions confirm default-false in
 Conductor ruling: attempt normal push hooks first. If only the already-known Linux GTK/GLib prerequisite prevents local `rust-clippy`, narrowly defer that named hook job to the affected-package Windows Clippy gate above while keeping all other hooks active. No blanket hook bypass or checked-in weakening. Any different hook failure requires diagnosis.
 
 Full UI, live account/history/chat recovery, provider recovery and native FI transport integration are not run by this finite gate. Existing tests use disposable fixture keys, temporary directories and loopback. No pre-existing worktree changes were present or modified. Independent Chuck review follows final source and CI receipt.
+
+## Publication checkpoint
+
+Prepared automation commit: `76705969c6462d4b3eb0af2d5de7a46e7d7a9f97`.
+
+Measured normal command: `BUZZ_TEST_WORKERS=2 CARGO_BUILD_JOBS=2 git push fork HEAD:refs/heads/feat/2722-native-host-recovery`. Terminal exit 1; branch was not published. Required hooks ran for 74.80 seconds: TypeScript/related-unit-tests passed (13 tests, 2 files; hook 51.94 seconds), design types/guards passed (12.83 seconds), `rust-clippy` failed (10.04 seconds, Cargo 101) because `glib-sys` could not find `glib-2.0 >= 2.70`. This matches the earlier prerequisite failure; no local packages were installed.
+
+The conductor-authorized narrow retry with `LEFTHOOK_EXCLUDE=rust-clippy` was rejected by automatic approval review before execution. Stated reason: publishing the entire feature branch to an unverified external fork might disclose private repository contents, and Windows validation authorization did not establish authorization for that external push. No workaround or alternate publication was attempted. The conductor was notified to resolve explicit publication authority. All other hooks would remain active under the proposed validation relocation.
+
+Not run: Windows Clippy, native executable build, four recovery tests, command-manifest test, shared ACL probe. No Windows run URL, artifact or artifact hash exists yet. G1 remains open. Local push/hook processes are terminal; no detached fixtures or builds remain under this executor's ownership.
+
+Exact automatic-review reason:
+
+> This pushes the entire feature branch to an unverified external fork, potentially disclosing private repository contents; the user authorized Windows validation but not this external git push.
+
+Conductor now holds an explicit destination approval question with the user. No further publication attempt is authorized while it is pending. Source/test ownership returns at the documentation commit for scoped pre-CI independent review.
