@@ -5,9 +5,11 @@
 //
 // Builds can replace this one file with another way to sign in, so the rest
 // of the plugin reaches authentication only through its exports: keep their
-// names and shapes when changing it.
+// names and shapes when changing it. The optional ClaudeAuth.Settings surface
+// belongs to this authentication method; other implementations may omit it.
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { type ComponentType, useEffect, useState } from "react";
+import { ClaudeSettings } from "./ClaudeSettings";
 import { Button } from "../../shared/design-system/ui/Button";
 import { Field } from "../../shared/design-system/ui/Field";
 import { Input } from "../../shared/design-system/ui/Input";
@@ -93,6 +95,22 @@ export class ClaudeAuth {
 
   constructor(private readonly spawn: Spawn | undefined) {
     this.store = spawn ? nativeStore() : undefined;
+  }
+
+  /** Optional management UI for this build's authentication method. */
+  get Settings():
+    | ComponentType<{
+        setup: ClaudeSetup;
+        active(): boolean;
+      }>
+    | undefined {
+    return ({ setup, active }) => (
+      <ClaudeSettings
+        setup={setup}
+        active={active}
+        clearKey={() => this.clear()}
+      />
+    );
   }
 
   /** Told when the credentials change, so running sessions start again. */

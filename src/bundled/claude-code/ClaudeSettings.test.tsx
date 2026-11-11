@@ -59,10 +59,13 @@ function fixture(active = () => true) {
     exited: Promise.resolve(127),
   }));
   const setup = new ClaudeSetup(spawn);
+  const Settings = setup.auth.Settings;
+  if (!Settings)
+    throw new Error("API-key auth must supply its Settings component");
   render(
     <StrictMode>
       <button type="button">Before settings</button>
-      <ClaudeSettings setup={setup} active={active} />
+      <Settings setup={setup} active={active} />
       <button type="button">After settings</button>
     </StrictMode>,
   );
@@ -428,7 +431,13 @@ it("discards replacement drafts when the page closes", async () => {
   const draft = await replaceKey(user);
   fireEvent.change(draft, { target: { value: "sk-ant-draft" } });
   cleanup();
-  render(<ClaudeSettings setup={setup} active={() => true} />);
+  render(
+    <ClaudeSettings
+      setup={setup}
+      active={() => true}
+      clearKey={() => setup.auth.clear()}
+    />,
+  );
   const input = await savedKey();
   expect(input).not.toHaveValue(native.value);
   expect(input).not.toHaveValue("sk-ant-draft");

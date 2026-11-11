@@ -5,7 +5,7 @@ import { repositoriesContext } from "../../features/communities/repositories";
 // this computer. Each conversation the agent is in is one continuing session;
 // Claude answers with the in-process Buzz tools.
 import { isTauri } from "@tauri-apps/api/core";
-import { createElement } from "react";
+import { type ComponentType, createElement } from "react";
 import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import { withProviderWords } from "../../features/agents/failure-words";
@@ -14,7 +14,6 @@ import type { PluginModule } from "../../plugins/api";
 import { ClaudeLogoIcon } from "../../shared/design-system/icons";
 import { claudeRun, TYPE_ID } from "./run";
 import { ClaudeDefaults } from "./defaults";
-import { ClaudeSettings } from "./ClaudeSettings";
 import { ClaudeRuntime, type Config, config, DEFAULT_CONFIG } from "./runtime";
 import { ClaudeSetup, withScript } from "./setup";
 import { createTabs } from "./tabs";
@@ -40,13 +39,18 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const spawn = host.spawn && withScript(host.spawn.bind(host));
   const readFile = host.readFile?.bind(host);
   const setup = new ClaudeSetup(spawn, (input) => host.request(input));
-  ctx.settingsCards.register({
-    id: "credentials",
-    title: "Claude",
-    icon: ClaudeLogoIcon,
-    group: "Plugins",
-    component: ({ active }) => createElement(ClaudeSettings, { setup, active }),
-  });
+  // Older replacement auth implementations need not provide key management.
+  const { Settings } = setup.auth as {
+    Settings?: ComponentType<{ setup: ClaudeSetup; active(): boolean }>;
+  };
+  if (Settings)
+    ctx.settingsCards.register({
+      id: "credentials",
+      title: "Claude",
+      icon: ClaudeLogoIcon,
+      group: "Plugins",
+      component: ({ active }) => createElement(Settings, { setup, active }),
+    });
   ctx.agentProtection.registerModels({
     label: "Claude",
     models: async () =>
@@ -122,19 +126,16 @@ export const apply: PluginModule["apply"] = (ctx) => {
     });
   }
 
+  const destination = Settings
+    ? { section: `${ctx.pluginOwner?.id ?? "buzz.claude-code"}/credentials` }
+    : { section: "agents", provider: typeKey };
+  const settingsLink = `buzz://settings?${new URLSearchParams(destination)}`;
   const openSetup = () =>
-    void ctx.navigation.open({
-      version: 1,
-      kind: "settings",
-      section: "buzz.claude-code/credentials",
-    });
+    void ctx.navigation.open({ version: 1, kind: "settings", ...destination });
   // Failed turns' reports link to the same place, then quote Claude. Buzz's
   // own refusal to start Claude isn't Claude's words, and the link says it.
   runtime.explain = (error) => {
-    const explained = setup.auth.explainTurn(
-      error,
-      "buzz://settings?section=buzz.claude-code%2Fcredentials",
-    );
+    const explained = setup.auth.explainTurn(error, settingsLink);
     return explained === error || refusedByBuzz(error)
       ? explained
       : withProviderWords(explained, "Claude", error);

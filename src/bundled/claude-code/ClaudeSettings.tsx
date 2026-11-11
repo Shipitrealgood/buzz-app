@@ -14,9 +14,11 @@ import type { ClaudeSetup } from "./setup";
 export function ClaudeSettings({
   setup,
   active,
+  clearKey,
 }: {
   setup: ClaudeSetup;
   active(): boolean;
+  clearKey(): Promise<void>;
 }) {
   const [configured, setConfigured] = useState<boolean>();
   const [checking, setChecking] = useState(true);
@@ -58,7 +60,7 @@ export function ClaudeSettings({
     setClearing(true);
     setClearError("");
     try {
-      await setup.auth.clear();
+      await clearKey();
       setConfigured(false);
       setConfirm(false);
       // A runtime refresh cannot undo the completed credential removal.
