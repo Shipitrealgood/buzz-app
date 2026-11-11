@@ -3,6 +3,11 @@ name: CI
 on:
   # Manual dispatch runs only Windows; automatic checks include macOS recording.
   workflow_dispatch:
+    inputs:
+      recovery_only:
+        description: Build Buzz and run the finite native host recovery gate
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -159,7 +164,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     name: Windows native validation
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.recovery_only && 45 || 20 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -179,9 +184,86 @@ jobs:
           key: windows-native
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Native lint including Windows backend
+        if: ${{ !inputs.recovery_only }}
         run: cargo clippy -p Buzz -p buzz-agent-controller -p buzz-credential-store -p buzz-mesh-compute --locked --all-targets -- -D warnings
       - name: All native package tests
+        if: ${{ !inputs.recovery_only }}
         run: cargo test -p Buzz -p buzz-agent-controller -p buzz-credential-store -p buzz-mesh-compute --locked --no-fail-fast
+
+      - name: Native recovery build and finite tests
+        if: inputs.recovery_only
+        shell: pwsh
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = 'test-results/windows-recovery'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $revision = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $revision -ne $env:GITHUB_SHA) { throw 'Source revision mismatch' }
+          @("source=$revision", "runner=$env:RUNNER_OS/$env:RUNNER_ARCH", "image=$env:ImageVersion", (rustc -Vv), (cargo -V)) | Set-Content "$evidence/source.txt"
+          "| Gate | Count | Wall seconds |" >> $env:GITHUB_STEP_SUMMARY
+          "| --- | ---: | ---: |" >> $env:GITHUB_STEP_SUMMARY
+          function Invoke-CargoGate([string]$name, [string[]]$arguments, [string]$test = '') {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            "cargo $($arguments -join ' ')" | Set-Content "$evidence/$name.log"
+            & cargo @arguments 2>&1 | Tee-Object -FilePath "$evidence/$name.log" -Append
+            if ($LASTEXITCODE -ne 0) { throw "$name failed: $LASTEXITCODE" }
+            $count = '-'
+            if ($test) {
+              $log = Get-Content "$evidence/$name.log" -Raw
+              if ($log -notmatch ('(?m)^test ' + [regex]::Escape($test) + ' \.\.\. ok\r?$') -or
+                  $log -notmatch 'test result: ok\. 1 passed; 0 failed; 0 ignored;') { throw "$name did not execute exactly one passing case" }
+              $count = '1'
+            }
+            "| $name | $count | $([math]::Round($watch.Elapsed.TotalSeconds, 2)) |" >> $env:GITHUB_STEP_SUMMARY
+          }
+          Invoke-CargoGate 'clippy' @('clippy', '-p', 'Buzz', '--locked', '--all-targets', '--', '-D', 'warnings')
+          # Compile/link the actual debug desktop executable, without release bundling or launching it.
+          Invoke-CargoGate 'build' @('build', '-p', 'Buzz', '--bin', 'Buzz', '--locked')
+          $cases = @(
+            'relay::registered_hosts::tests::recovery_ipc_refuses_another_owner_before_opening_storage_or_network',
+            'relay::registered_hosts::tests::ready_identity_refuses_wrong_owner_closed_identity_and_noncanonical_origin',
+            'relay::registered_hosts::tests::journal_is_private_exclusive_and_reopenable',
+            'relay::registered_hosts::tests::signed_read_recovers_and_reopens_without_runtime_readiness_or_inventory_writes',
+            'tests::every_registered_command_is_listed_and_allowed'
+          )
+          foreach ($case in $cases) {
+            Invoke-CargoGate ($case.Split('::')[-1]) @('test', '-p', 'Buzz', '--lib', '--locked', $case, '--', '--exact', '--nocapture', '--test-threads=1') $case
+          }
+          # Run the shared owner's existing negative ACL probe, from the locked dependency itself.
+          $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata failed' }
+          $owner = @($metadata.packages | Where-Object name -eq 'buzz-paired-owner')
+          if ($owner.Count -ne 1 -or $owner[0].source -notlike '*#78232d95173b876babcee0f51b18f7c2a17dac0d') { throw 'Unexpected owner source' }
+          $probe = Join-Path (Split-Path $owner[0].manifest_path) 'windows/test-journal-acl.ps1'
+          $owner[0].source | Add-Content "$evidence/source.txt"
+          Get-FileHash $probe -Algorithm SHA256 | Format-List | Out-File "$evidence/acl-source.txt"
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoLogo -NoProfile -NonInteractive -File $probe 2>&1 | Tee-Object "$evidence/acl.log"
+          if ($LASTEXITCODE -ne 0) { throw "Shared ACL probe failed: $LASTEXITCODE" }
+          if ((Get-Content "$evidence/acl.log" -Raw) -notmatch 'another standard user read the control and was denied the DB, WAL and SHM') { throw 'Missing ACL completion evidence' }
+          "| Shared ACL: control read, DB/WAL/SHM denied | 1 | $([math]::Round($watch.Elapsed.TotalSeconds, 2)) |" >> $env:GITHUB_STEP_SUMMARY
+          Copy-Item target/debug/Buzz.exe "$evidence/Buzz.exe"
+          "Source: $revision. Four recovery cases, one manifest case, one shared ACL probe. Debug binary compiled; app not launched." >> $env:GITHUB_STEP_SUMMARY
+      - name: Windows recovery evidence
+        if: ${{ always() && inputs.recovery_only }}
+        shell: pwsh
+        run: |
+          $evidence = 'test-results/windows-recovery'
+          if (Test-Path $evidence) {
+            Get-ChildItem $evidence -File | Get-FileHash -Algorithm SHA256 | ForEach-Object {
+              "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)"
+            } | Set-Content "$evidence/SHA256SUMS"
+          }
+      - name: Upload Windows recovery evidence
+        if: ${{ always() && inputs.recovery_only }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-recovery-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/windows-recovery
+          if-no-files-found: error
+          retention-days: 7
 
   measurements:
     if: github.event_name != 'workflow_dispatch'
