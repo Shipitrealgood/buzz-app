@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
+import * as tauri from "@tauri-apps/api/core";
 import {
   clearView,
   clearViewScope,
@@ -195,4 +196,26 @@ it("uses one raw read with unchanged fallback and falsy-value semantics", () => 
   read.mockClear();
   expect(readView("scope", "value", "fallback")).toBe("fallback");
   expect(read).toHaveBeenCalledExactlyOnceWith(key);
+});
+
+it("records the write phase when a subscriber fails after storage accepts a draft", async () => {
+  vi.spyOn(tauri, "isTauri").mockReturnValue(true);
+  const invoke = vi.spyOn(tauri, "invoke").mockResolvedValue(undefined);
+  const stop = subscribeView("scope", () => {
+    throw Error("private error");
+  });
+  try {
+    expect(writeView("scope", "draft:room", "private draft")).toBe(false);
+    expect(readView("scope", "draft:room", "")).toBe("private draft");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+    const payload = invoke.mock.calls.at(-1)?.[1];
+    expect(payload).toMatchObject({
+      records: expect.arrayContaining([
+        expect.objectContaining({ operation: "notify-failed" }),
+      ]),
+    });
+    expect(JSON.stringify(payload)).not.toContain("private");
+  } finally {
+    stop();
+  }
 });
