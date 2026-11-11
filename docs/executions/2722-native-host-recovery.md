@@ -46,7 +46,7 @@ Measured commands:
 - `bin/cargo fmt --all -- --check`: passed after formatting the new Rust files.
 - `git diff --check`: passed.
 - `bin/cargo test -p Buzz --lib relay::registered_hosts::tests --locked -j 2`: exited 101 in `glib-sys` before app/test compilation, again missing `glib-2.0 >= 2.70`. No native test executed.
-- `bin/lefthook install`: installed this checkout's declared hooks; no global Git configuration changed. Required pre-commit checks run with the source commit.
+- `bin/lefthook install`: installed this checkout's declared hooks; no global Git configuration changed. Source commit pre-commit checks passed: literal names, icon boundary, Biome (three files, no fixes) and Rustfmt, total 4.36 seconds.
 
 Native tests authored against the actual Session/Registry/Device boundary and disposable loopback/filesystem fixtures. Native test execution is blocked by the same desktop system-library prerequisites. No service, provider, SSH, real journal, or live relay access.
 
@@ -73,3 +73,5 @@ Measured production source/config additions: **398 physical lines**, including c
 Self-review corrected the registration state mapping (`paired` → `registered`), the Windows lock location, the generic runtime command signature, and signature-versus-signout locking before handoff. This self-review is not the independent merge gate.
 
 All invoked Cargo/pnpm/test processes reached terminal status. One Cargo build at a time, at most two jobs. No detached servers or test fixture processes remain. Git was initially clean; all current changes are owned by this task. No pre-existing edits were staged, reverted or cleaned. No push, PR, merge, deployment, service operation or taskctl mutation.
+
+Source/tests commit: `c3056e099b0fbcdaf8f8b931cec85ddb7c1bd934`, signed off and attributed. Final receipt follows in a documentation-only commit. Documentation totals **143 physical added lines** across this receipt and the review brief. Final diff whitespace check passed; source commit left a clean worktree. The conductor receives the final documentation revision and process-terminal confirmation for exclusive handoff to independent review.

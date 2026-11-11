@@ -7,7 +7,7 @@ Requested: 2026-11-11. Next owner: independently dispatched reviewer.
 - Workspace: `buzz-app-review-20261111`.
 - Branch: `feat/2722-native-host-recovery`, not main.
 - Base: `128cd4c2f38801d5f773d5d5ec95a1ea5594b374`.
-- Review base through the source/evidence commits supplied by the conductor.
+- Source commit: `c3056e099b0fbcdaf8f8b931cec85ddb7c1bd934`; review base through the final documentation revision supplied by the conductor.
 - Receipt: [execution and gates](../executions/2722-native-host-recovery.md).
 - Governing scope: conductor-supplied checkpoint 1 of the Buzz App provider callback map; accepted reuse audit remains input.
 
