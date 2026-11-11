@@ -202,6 +202,10 @@ export function useMessageKeyActions(session: RelaySession) {
   }, [management, editor, session]);
 }
 
+/** A failed or unconfirmed send is still this device's outbox intent. */
+const unsent = (row: ChannelMessage) =>
+  row.delivery === "failed" || row.delivery === "unknown";
+
 /** Recovery stays outside virtualized rows; each conversation has one edit destination. */
 export function MessageManagement({
   session,
@@ -256,7 +260,7 @@ export function MessageManagement({
   const available =
     !selection ||
     ((!channelId || channelId === selection.row.channelId) &&
-      (selection.row.delivery === "failed" || deletable));
+      (unsent(selection.row) || deletable));
   useEffect(() => {
     if (!available) setSelection(undefined);
   }, [available]);
@@ -513,15 +517,16 @@ export function MessageManagementItems({
   row: ChannelMessage;
   session: RelaySession;
 }) {
-  return row.delivery === "failed" ? (
+  return unsent(row) ? (
     <UnsentMessageItems row={row} session={session} />
   ) : (
     <ManagedMessageItems row={row} session={session} />
   );
 }
 
-/** The relay never stored a failed send, so Delete, which discards it from this
- * device, is its only item, and channel state does not gate it. */
+/** Removing an unsent message discards it from this device, so it is the only
+ * item and channel state does not gate it. An unconfirmed send may have reached
+ * the relay; a caller that owns its recovery confirms it instead. */
 function UnsentMessageItems({
   row,
   session,
@@ -536,7 +541,10 @@ function UnsentMessageItems({
     !management ||
     row.authorId !== session.viewer ||
     row.membership ||
-    row.diff
+    row.diff ||
+    (row.delivery === "unknown" &&
+      management.operations.find((item) => item.event.id === row.id)
+        ?.recovery !== undefined)
   )
     return null;
   const remove = () =>
@@ -546,7 +554,9 @@ function UnsentMessageItems({
       <MenuIcon>
         <TrashIcon size={14} />
       </MenuIcon>
-      Delete message
+      {row.delivery === "unknown"
+        ? "Remove from this device"
+        : "Delete message"}
     </MenuItem>
   );
 }
@@ -705,8 +715,10 @@ function DeleteMessageDialog({
   );
   const cancelAction = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState<string>();
-  // The relay never stored a failed send; deleting it discards the outbox intent.
-  const unsent = row.delivery === "failed";
+  // Deleting an unsent message discards only its outbox intent. An unconfirmed
+  // one may already be on the relay; discarding it never retracts that copy.
+  const local = unsent(row);
+  const unconfirmed = row.delivery === "unknown";
   const [discarding, setDiscarding] = useState(false);
   const operation = operations.find((item) => item.event.id === operationId);
   const pending = operation?.delivery === "sending" || discarding;
@@ -727,7 +739,7 @@ function DeleteMessageDialog({
     setError(undefined);
     try {
       if (
-        !unsent &&
+        !local &&
         !session.channels
           .list()
           .channels.some(
@@ -742,13 +754,16 @@ function DeleteMessageDialog({
         throw new Error(
           "This conversation is no longer available for changes.",
         );
-      if (unsent) {
+      if (local) {
         // dismiss() leaves a send that is retrying alone, without an error.
         if (
           !session.outbox
             ?.snapshot()
             .some(
-              (item) => item.event.id === row.id && item.delivery === "failed",
+              (item) =>
+                item.event.id === row.id &&
+                item.delivery === row.delivery &&
+                (!unconfirmed || !item.recovery),
             )
         )
           throw new Error(
@@ -776,12 +791,16 @@ function DeleteMessageDialog({
   };
   return (
     <AlertDialog
-      title="Delete message?"
+      title={
+        unconfirmed ? "Remove message from this device?" : "Delete message?"
+      }
       initialFocus={cancelAction}
       description={
-        unsent
-          ? "This message wasn’t sent. Deleting it removes it from this device. This cannot be undone."
-          : "This requests removal of this message from Buzz’s relay. People may still have copies. This cannot be undone."
+        unconfirmed
+          ? "Buzz couldn’t confirm whether this message was delivered. Removing it stops this device from sending it. If it was delivered, it stays in the conversation."
+          : local
+            ? "This message wasn’t sent. Deleting it removes it from this device. This cannot be undone."
+            : "This requests removal of this message from Buzz’s relay. People may still have copies. This cannot be undone."
       }
       pending={pending}
       finalFocus={() =>
@@ -794,7 +813,15 @@ function DeleteMessageDialog({
             {operationId ? "Close" : "Cancel"}
           </Button>
           <Button variant="destructive" disabled={pending} onClick={run}>
-            {pending ? "Deleting…" : retryable ? "Retry" : "Delete"}
+            {pending
+              ? unconfirmed
+                ? "Removing…"
+                : "Deleting…"
+              : retryable
+                ? "Retry"
+                : unconfirmed
+                  ? "Remove"
+                  : "Delete"}
           </Button>
         </>
       }
