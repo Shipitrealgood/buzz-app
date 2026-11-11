@@ -5,6 +5,7 @@ import { repositoriesContext } from "../../features/communities/repositories";
 // this computer. Each conversation the agent is in is one continuing session;
 // Claude answers with the in-process Buzz tools.
 import { isTauri } from "@tauri-apps/api/core";
+import { createElement } from "react";
 import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import { withProviderWords } from "../../features/agents/failure-words";
@@ -13,6 +14,7 @@ import type { PluginModule } from "../../plugins/api";
 import { ClaudeLogoIcon } from "../../shared/design-system/icons";
 import { claudeRun, TYPE_ID } from "./run";
 import { ClaudeDefaults } from "./defaults";
+import { ClaudeSettings } from "./ClaudeSettings";
 import { ClaudeRuntime, type Config, config, DEFAULT_CONFIG } from "./runtime";
 import { ClaudeSetup, withScript } from "./setup";
 import { createTabs } from "./tabs";
@@ -22,7 +24,13 @@ export { TYPE_ID };
 /** How often Buzz's copy of Claude looks for a new release. */
 const UPDATE_MS = 6 * 60 * 60_000;
 
-export const inject = ["agents", "host", "agentProtection", "navigation"];
+export const inject = [
+  "agents",
+  "host",
+  "agentProtection",
+  "navigation",
+  "settingsCards",
+];
 export const apply: PluginModule["apply"] = (ctx) => {
   // Only the desktop app can start `claude`, and setup and file uploads run
   // `bash` and `base64`, which stock Windows lacks; no unusable type elsewhere.
@@ -32,6 +40,13 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const spawn = host.spawn && withScript(host.spawn.bind(host));
   const readFile = host.readFile?.bind(host);
   const setup = new ClaudeSetup(spawn, (input) => host.request(input));
+  ctx.settingsCards.register({
+    id: "credentials",
+    title: "Claude",
+    icon: ClaudeLogoIcon,
+    group: "Plugins",
+    component: ({ active }) => createElement(ClaudeSettings, { setup, active }),
+  });
   ctx.agentProtection.registerModels({
     label: "Claude",
     models: async () =>
@@ -111,15 +126,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
     void ctx.navigation.open({
       version: 1,
       kind: "settings",
-      section: "agents",
-      provider: typeKey,
+      section: "buzz.claude-code/credentials",
     });
   // Failed turns' reports link to the same place, then quote Claude. Buzz's
   // own refusal to start Claude isn't Claude's words, and the link says it.
   runtime.explain = (error) => {
     const explained = setup.auth.explainTurn(
       error,
-      `buzz://settings?section=agents&provider=${encodeURIComponent(typeKey)}`,
+      "buzz://settings?section=buzz.claude-code%2Fcredentials",
     );
     return explained === error || refusedByBuzz(error)
       ? explained

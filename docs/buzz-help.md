@@ -976,7 +976,20 @@ available rather than silently discarding it.
   them, so a newly granted or removed permission applies without signing in
   again; a failed check keeps the previous permissions.
   Claude runs with an Anthropic API key pasted under **Anthropic API key**
-  there, once for every Claude agent. When creating a Claude agent or editing
+  there, once for every local Claude agent. With the Claude plugin enabled,
+  **Settings → Claude** starts with a masked, read-only saved key. The
+  field opens its **Edit / Copy** menu when focused or clicked; the chevron
+  also opens it. **Edit** shows the existing key
+  for editing, with small **Cancel / Save** buttons inside the field.
+  **Save** updates a changed, non-empty key and returns to the masked view;
+  **Cancel** discards the draft. Copy works without revealing.
+  Leaving the page discards its displayed value and draft.
+  The trash button (**Remove key**) deletes the saved key after confirmation.
+  You can also add or remove a key
+  if the Claude integration needs installation or an update. Removing
+  it does not revoke it at Anthropic. New local Claude sessions and security
+  reviews need a key again; a turn already running can finish.
+  When creating a Claude agent or editing
   one that runs on this computer, click **Add key** beside **Harness** to open
   **Set up Claude**. Builds with interactive authentication show **Sign in**
   instead. Selecting Claude does not open setup automatically; closing setup

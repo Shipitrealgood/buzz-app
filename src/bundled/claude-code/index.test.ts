@@ -1,13 +1,50 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
+import { SettingsCardsService } from "../../features/settings/service";
 import type { AgentType } from "../../features/agents/service";
 import { ClaudeRuntime } from "./runtime";
-import { apply } from "./index";
+import { apply, inject } from "./index";
 import { ClaudeAuth } from "./auth";
 import { ClaudeSetup } from "./setup";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
 afterEach(() => vi.restoreAllMocks());
+
+it("contributes Claude settings only for the lifetime of the desktop plugin", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  root.provide("agents", {
+    register: vi.fn(),
+    relay: () => undefined,
+  } as never);
+  root.provide("host", { request: vi.fn() } as never);
+  root.provide("agentProtection", { registerModels: vi.fn() } as never);
+  root.provide("navigation", { open: vi.fn() } as never);
+  const cards = new SettingsCardsService(root);
+  const scope = root.extend({
+    pluginOwner: { id: "buzz.claude-code", revision: "r1" },
+  });
+  const fiber = scope.plugin({ apply, inject });
+  try {
+    await fiber.await();
+    expect(cards.snapshot()).toMatchObject([
+      {
+        key: "buzz.claude-code/credentials",
+        title: "Claude",
+        group: "Plugins",
+      },
+    ]);
+    await fiber.dispose();
+    expect(cards.snapshot()).toEqual([]);
+  } finally {
+    await root.fiber.dispose();
+  }
+});
 
 it("observes saved sessions with the live status of running ones", () => {
   vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
@@ -30,6 +67,7 @@ it("observes saved sessions with the live status of running ones", () => {
   ]);
   let type: AgentType | undefined;
   apply({
+    settingsCards: { register: vi.fn() },
     agentProtection: { registerModels: vi.fn() },
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
@@ -53,6 +91,7 @@ it("shares a Claude agent's model as the claude runtime and imports it back", ()
   vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   let type: AgentType | undefined;
   apply({
+    settingsCards: { register: vi.fn() },
     agentProtection: { registerModels: vi.fn() },
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
@@ -83,6 +122,7 @@ it("registers review models from the discovered catalog", async () => {
   ] as never);
   const registerModels = vi.fn();
   apply({
+    settingsCards: { register: vi.fn() },
     agentProtection: { registerModels },
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
@@ -95,7 +135,7 @@ it("registers review models from the discovered catalog", async () => {
   ]);
 });
 
-it("links a failed turn's key to Claude's own Agent setup, quoting only what Claude said", async () => {
+it("links a failed turn's key to Claude settings, quoting only what Claude said", async () => {
   vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   // The runtime the plugin made, as its sessions list reads it.
   let runtime: ClaudeRuntime | undefined;
@@ -108,6 +148,7 @@ it("links a failed turn's key to Claude's own Agent setup, quoting only what Cla
   vi.spyOn(ClaudeRuntime.prototype, "sessions").mockReturnValue([]);
   let type: AgentType | undefined;
   apply({
+    settingsCards: { register: vi.fn() },
     agentProtection: { registerModels: vi.fn() },
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
@@ -120,8 +161,7 @@ it("links a failed turn's key to Claude's own Agent setup, quoting only what Cla
     effect: vi.fn(),
   } as never);
   type?.sessions?.list("a".repeat(64));
-  const settings =
-    "buzz://settings?section=agents&provider=buzz.claude-code%2Fclaude-code";
+  const settings = "buzz://settings?section=buzz.claude-code%2Fcredentials";
   const missing = await new ClaudeAuth(undefined)
     .authorize(async () => {
       throw new Error("unreachable");

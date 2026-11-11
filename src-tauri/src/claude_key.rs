@@ -1,7 +1,7 @@
 //! The Anthropic API key Buzz's Claude runs with, in OSS builds. Native code
 //! owns it: it is kept in the OS credential store under Buzz's own item, and
-//! no command returns it. Native code adds it to the environment of the
-//! Claude processes `buzz.claude-code` starts that ask for it
+//! Settings can explicitly reveal it through the main window. Native code adds
+//! it to the environment of the Claude processes `buzz.claude-code` starts that ask for it
 //! (`plugin_host_process_spawn`'s `secrets`). On macOS the item is created by
 //! the Buzz binary, so only that binary reads it without a prompt; an agent's
 //! shell cannot read it from the store.
@@ -13,11 +13,10 @@
 //!   also strips `SSH_AUTH_SOCK`, `GIT_*` and every `*TOKEN`/`*KEY`
 //!   variable, so Buzz does not set it.
 //! - `claude-sh` is `bash -c` with a script the caller supplies, so code that
-//!   can start it as `buzz.claude-code` can print the key back. Keeping it
-//!   out of the webview is the plugin's convention (`auth.tsx`), not
-//!   something native code enforces: like the rest of Buzz's threat model,
-//!   this trusts installed plugin code. What native code does enforce is
-//!   that no other plugin or process is given the key (`may_have`).
+//!   can start it as `buzz.claude-code` can print the key back. Like the rest
+//!   of Buzz's threat model, the main webview trusts installed plugin code.
+//!   Native code restricts process-secret injection to Claude (`may_have`);
+//!   explicit Settings reveal is a separate main-window IPC permission.
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
@@ -53,6 +52,7 @@ pub(crate) fn may_have(plugin: &str, process_id: &str) -> bool {
 pub(crate) trait KeyStore: Send + Sync {
     fn read(&self) -> Result<Option<Zeroizing<String>>, String>;
     fn replace(&self, key: &str) -> Result<(), String>;
+    fn delete(&self) -> Result<(), String>;
 }
 
 pub(crate) struct ClaudeKey {
@@ -103,6 +103,14 @@ impl ClaudeKey {
         let mut key = self.key.lock().await;
         Ok(self.reread(&mut key).await?.is_some())
     }
+    /// Explicit Settings reveal reads the current store, never a stale cached key.
+    pub(crate) async fn reveal(&self) -> Result<Option<String>, String> {
+        let mut key = self.key.lock().await;
+        Ok(self
+            .reread(&mut key)
+            .await?
+            .map(|key| key.as_str().to_owned()))
+    }
     /// Saves `value`, loosely checked as Anthropic's form: one `sk-ant-` word.
     pub(crate) async fn set(&self, value: &str) -> Result<(), String> {
         let value = value.trim();
@@ -123,6 +131,18 @@ impl ClaudeKey {
             .await
             .map_err(|_| "Secure storage is unavailable".to_string())??;
         *key = Some(saved);
+        Ok(())
+    }
+
+    /// Remove the saved key before dropping the copy used by new processes.
+    /// A failed delete preserves that copy so the caller can retry.
+    pub(crate) async fn clear(&self) -> Result<(), String> {
+        let mut key = self.key.lock().await;
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.delete())
+            .await
+            .map_err(|_| "Secure storage is unavailable".to_string())??;
+        *key = None;
         Ok(())
     }
 }
@@ -150,6 +170,12 @@ impl KeyStore for OsKeyStore {
     }
     fn replace(&self, key: &str) -> Result<(), String> {
         buzz_credential_store::replace(SERVICE, ACCOUNT, key.as_bytes()).map_err(stored)
+    }
+    fn delete(&self) -> Result<(), String> {
+        match buzz_credential_store::delete(SERVICE, ACCOUNT) {
+            Ok(()) | Err(buzz_credential_store::Error::Absent) => Ok(()),
+            Err(error) => Err(stored(error)),
+        }
     }
 }
 
@@ -184,6 +210,9 @@ impl KeyStore for OsKeyStore {
     fn replace(&self, _key: &str) -> Result<(), String> {
         Err("Secure storage is not available here".into())
     }
+    fn delete(&self) -> Result<(), String> {
+        Err("Secure storage is not available here".into())
+    }
 }
 
 #[tauri::command]
@@ -200,6 +229,18 @@ pub(crate) async fn claude_api_key_set(
 ) -> Result<(), String> {
     let value = Zeroizing::new(value);
     key.set(&value).await
+}
+
+#[tauri::command]
+pub(crate) async fn claude_api_key_clear(key: tauri::State<'_, ClaudeKey>) -> Result<(), String> {
+    key.clear().await
+}
+
+#[tauri::command]
+pub(crate) async fn claude_api_key_reveal(
+    key: tauri::State<'_, ClaudeKey>,
+) -> Result<Option<String>, String> {
+    key.reveal().await
 }
 
 #[cfg(test)]

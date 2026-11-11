@@ -307,6 +307,7 @@ function applied({
   const ctx = {
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     navigation: { open: vi.fn(async () => ({ status: "opened" })) },
+    settingsCards: { register: vi.fn() },
     agentProtection: { registerModels: vi.fn() },
     host: {
       spawn,
@@ -825,7 +826,13 @@ it("shows the channel's current kind for a session another build started", async
 });
 
 it("is an agent type on the desktop app", () => {
-  expect(inject).toEqual(["agents", "host", "agentProtection", "navigation"]);
+  expect(inject).toEqual([
+    "agents",
+    "host",
+    "agentProtection",
+    "navigation",
+    "settingsCards",
+  ]);
   const { type } = installed();
   expect(type).toMatchObject({
     id: "claude-code",
@@ -1841,8 +1848,7 @@ it("offers Set up Claude beside Harness when Claude is picked, then its models",
   expect(navigation.open).toHaveBeenCalledWith({
     version: 1,
     kind: "settings",
-    section: "agents",
-    provider: "buzz.claude-code/claude-code",
+    section: "buzz.claude-code/credentials",
   });
 });
 
@@ -2079,8 +2085,7 @@ it("sends a library card without a key to Claude's setup in Settings", async () 
   expect(navigation.open).toHaveBeenCalledWith({
     version: 1,
     kind: "settings",
-    section: "agents",
-    provider: "buzz.claude-code/claude-code",
+    section: "buzz.claude-code/credentials",
   });
 });
 
