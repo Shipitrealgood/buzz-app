@@ -319,7 +319,11 @@ it("shows a renewal in progress with a Cancel that ends only the browser step", 
   vi.mocked(h.service.signIn).mockImplementation(
     () =>
       new Promise((resolve) => {
-        finish = () => resolve(h.service.snapshot());
+        h.publish({ renewing: true });
+        finish = () => {
+          h.publish({ renewing: false });
+          resolve(h.service.snapshot());
+        };
       }),
   );
   vi.mocked(h.service.cancelSignIn).mockImplementation(async () => finish());
@@ -353,7 +357,11 @@ it("keeps keyboard focus on the renewal action as Renew and Cancel swap", async 
   vi.mocked(h.service.signIn).mockImplementation(
     () =>
       new Promise((resolve) => {
-        finish = () => resolve(h.service.snapshot());
+        h.publish({ renewing: true });
+        finish = () => {
+          h.publish({ renewing: false });
+          resolve(h.service.snapshot());
+        };
       }),
   );
   vi.mocked(h.service.cancelSignIn).mockImplementation(async () => finish());
@@ -387,6 +395,43 @@ it("keeps keyboard focus on the renewal action when native ends a renewal", asyn
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Renew sign-in" })).toHaveFocus(),
   );
+});
+
+// Native records a renewal only once it starts the browser step: a Cancel
+// before then waits for it, then ends that step.
+it("holds a Cancel chosen before native records the renewal, then ends it", async () => {
+  const h = federatedFixture();
+  h.publish({
+    status: "signed-in",
+    email: "a@example.com",
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  let start: () => void = () => {};
+  let finish: () => void = () => {};
+  vi.mocked(h.service.signIn).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        start = () => h.publish({ renewing: true });
+        finish = () => {
+          h.publish({ renewing: false });
+          resolve(h.service.snapshot());
+        };
+      }),
+  );
+  vi.mocked(h.service.cancelSignIn).mockImplementation(async () => finish());
+  render(<IdentitySettings viewer={viewer} federatedIdentity={h.service} />, {
+    wrapper: ToastProvider,
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Renew sign-in" }));
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(h.service.cancelSignIn).not.toHaveBeenCalled();
+  act(() => start());
+  await waitFor(() => expect(h.service.cancelSignIn).toHaveBeenCalledOnce());
+  expect(
+    await screen.findByRole("button", { name: "Renew sign-in" }),
+  ).toBeVisible();
+  expect(h.service.signOut).not.toHaveBeenCalled();
 });
 
 it("does not take focus back after the person moves away from Cancel", async () => {

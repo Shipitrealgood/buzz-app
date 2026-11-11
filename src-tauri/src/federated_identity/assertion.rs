@@ -1813,6 +1813,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_manual_retry_keeps_an_issued_assertion() {
+        use super::super::tests::{adapter, at_adapter, Memory};
+        let identity = IdentityHost::fixture();
+        let viewer = identity.viewer().await.unwrap();
+        let relay = "wss://relay.example";
+        let minted = now().unwrap() as u64;
+        let expires = minted + 60;
+        let (base, server) = adapter(vec![serde_json::json!({"assertion":jwt(&viewer,relay,minted,expires),"nostr_pubkey":viewer,"expires_at":expires})]).await;
+        let host = at_adapter(Arc::new(Memory::default()), base);
+        signed_in(&host);
+        host.discovered(relay, true);
+        let url = Url::parse(relay).unwrap();
+        let first = host.assertion_for_relay(&identity, &url).await.unwrap();
+        host.forget_refusals(relay);
+        // Served from the cache: the adapter answers only once.
+        let again = host.assertion_for_relay(&identity, &url).await.unwrap();
+        assert!(first.header().is_some());
+        assert_eq!(again.header(), first.header());
+        assert_eq!(server.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn terminal_status_with_an_unreadable_body_stays_terminal_across_acquisition_cooldown() {
         use super::super::tests::{at_adapter, Memory};
         use std::sync::atomic::{AtomicUsize, Ordering};

@@ -844,6 +844,16 @@ function OrganizationSignIn({
       trigger.current?.focus();
   });
   useEffect(() => setErrorOpen(!!problem), [problem]);
+  // Cancel shows as soon as Renew is chosen, but native records the renewal
+  // only once it starts the browser step. A Cancel before then waits for it,
+  // so the click ends that step instead of finding nothing to cancel.
+  const [cancelPending, setCancelPending] = useState<string | null>(null);
+  useEffect(() => {
+    if (!cancelPending || !state.renewing) return;
+    setCancelPending(null);
+    if (cancelPending === state.revision)
+      void run(() => identity.cancelSignIn());
+  });
   if (!state.authority || state.status === "unconfigured") return null;
   // A failed restore keeps its stored session, which may still be valid: no
   // sign-in or sign-out, only a check that retries the restore.
@@ -913,9 +923,11 @@ function OrganizationSignIn({
       return current.status === "signed-in" && current.revision === revision
         ? identity.signIn()
         : Promise.resolve();
-    }).finally(() =>
-      setRenewal((pending) => (pending === revision ? null : pending)),
-    );
+    }).finally(() => {
+      setRenewal((pending) => (pending === revision ? null : pending));
+      // A renewal that ended before native recorded it has nothing to cancel.
+      setCancelPending((pending) => (pending === revision ? null : pending));
+    });
   };
   const content = (
     <>
@@ -954,7 +966,10 @@ function OrganizationSignIn({
                 variant="subtle"
                 size="sm"
                 type="button"
-                onClick={() => void run(() => identity.cancelSignIn())}
+                onClick={() => {
+                  if (state.renewing) void run(() => identity.cancelSignIn());
+                  else setCancelPending(state.revision);
+                }}
               >
                 Cancel
               </Button>

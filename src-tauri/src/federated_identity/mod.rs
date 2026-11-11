@@ -1545,7 +1545,12 @@ pub(crate) fn federated_identity_ask_again(
     relay: String,
 ) -> Result<(), String> {
     let relay = config::canonical_relay(&relay)?;
-    host.server_for(&relay)?.forget_refusals(&relay);
+    // Only a server that exists has refusals cached, so asking again never
+    // makes one (or records its host). Keys end with the relay, so other
+    // communities keep theirs.
+    for server in host.servers() {
+        server.forget_refusals(&relay);
+    }
     Ok(())
 }
 #[tauri::command]
