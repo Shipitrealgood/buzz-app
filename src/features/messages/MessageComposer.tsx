@@ -1131,21 +1131,19 @@ function Composer({
   function persist(next: MentionDraft, expected = revision.current) {
     writing.current = true;
     const current = viewRevision(scope, draftKey);
-    diagnose("persist", expected, current, JSON.stringify(next));
+    const serialized = JSON.stringify(next);
+    diagnose("persist", expected, current, serialized);
     // A value already saved by another writer, as the Huddle owner saves the
     // stub after a companion send, is this save's outcome, not a conflict.
     const result =
-      current === JSON.stringify(next)
+      current === serialized
         ? "saved"
         : replaceView(scope, draftKey, expected, next);
     writing.current = false;
-    diagnose(
-      result,
-      expected,
-      viewRevision(scope, draftKey),
-      JSON.stringify(next),
-    );
-    if (result === "saved") revision.current = JSON.stringify(next);
+    const saved = viewRevision(scope, draftKey);
+    const nextRevision = JSON.stringify(next);
+    diagnose(result, expected, saved, nextRevision);
+    if (result === "saved") revision.current = nextRevision;
     setConflict(result === "changed");
     setStorageFailed(result === "failed");
     return result;
