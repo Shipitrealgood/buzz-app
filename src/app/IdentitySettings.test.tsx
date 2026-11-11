@@ -370,6 +370,25 @@ it("keeps keyboard focus on the renewal action as Renew and Cancel swap", async 
   );
 });
 
+// No click arms these: native ends the renewal on its own.
+it("keeps keyboard focus on the renewal action when native ends a renewal", async () => {
+  const h = federatedFixture();
+  h.publish({
+    status: "signed-in",
+    email: "a@example.com",
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    renewing: true,
+  });
+  render(<IdentitySettings viewer={viewer} federatedIdentity={h.service} />, {
+    wrapper: ToastProvider,
+  });
+  screen.getByRole("button", { name: "Cancel" }).focus();
+  act(() => h.publish({ renewing: false }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Renew sign-in" })).toHaveFocus(),
+  );
+});
+
 it("does not take focus back after the person moves away from Cancel", async () => {
   const h = federatedFixture();
   h.publish({
@@ -738,6 +757,48 @@ const memberships = [
   { id: "wss://kalvin.communities.buzz.xyz", name: "kalvin" },
   { id: "wss://buzz.homelab.example", name: "homelab" },
 ];
+
+// A listed row has no error popup to take focus: Renew gets it back when a
+// renewal fails on its own.
+it("keeps keyboard focus on a listed server's Renew when its renewal fails", async () => {
+  const { block, root, servers } = twoServers();
+  block.publish({
+    status: "signed-in",
+    email: "will@acme.example",
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  let fail: () => void = () => {};
+  vi.mocked(block.service.signIn).mockImplementation(
+    () =>
+      new Promise((_, reject) => {
+        fail = () => reject(new Error("refused"));
+      }),
+  );
+  const listed = vi.fn(servers);
+  render(
+    <IdentitySettings
+      viewer={viewer}
+      federatedIdentity={root}
+      servers={listed}
+    />,
+    { wrapper: ToastProvider },
+  );
+  await waitFor(() => expect(listed).toHaveBeenCalledOnce());
+  await act(async () => {
+    await listed.mock.results[0]?.value;
+  });
+  const card = screen.getByRole("article", {
+    name: "Acme (acme.builderlab.xyz)",
+  });
+  within(card).getByRole("button", { name: "Renew sign-in" }).focus();
+  await userEvent.keyboard("{Enter}");
+  expect(within(card).getByRole("button", { name: "Cancel" })).toHaveFocus();
+  await act(async () => fail());
+  expect(await within(card).findByRole("alert")).toBeVisible();
+  expect(
+    within(card).getByRole("button", { name: "Renew sign-in" }),
+  ).toHaveFocus();
+});
 
 it("lists each signed-in server and signs out of one without touching the other", async () => {
   const { block, pub, root, servers } = twoServers();

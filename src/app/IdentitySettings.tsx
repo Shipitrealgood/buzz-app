@@ -830,8 +830,9 @@ function OrganizationSignIn({
   // The session a browser renewal started from, while that renewal runs.
   // Native's `renewing` says so too, after this page was left and reopened.
   const [renewal, setRenewal] = useState<string | null>(null);
-  // Renew and Cancel replace each other. The one that had focus hands it to
-  // its replacement, unless the person has moved focus elsewhere.
+  // Renew and Cancel replace each other, on a click or when a renewal fails,
+  // times out or finishes. The one that had focus hands it to its
+  // replacement, unless the person has moved focus elsewhere.
   const handoff = useRef<Element | null>(null);
   const actions = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -842,10 +843,6 @@ function OrganizationSignIn({
     if (!active || active === document.body || active.contains(actions.current))
       trigger.current?.focus();
   });
-  const holdFocus = () => {
-    const active = document.activeElement;
-    handoff.current = actions.current?.contains(active) ? active : null;
-  };
   useEffect(() => setErrorOpen(!!problem), [problem]);
   if (!state.authority || state.status === "unconfigured") return null;
   // A failed restore keeps its stored session, which may still be valid: no
@@ -909,7 +906,6 @@ function OrganizationSignIn({
   // The current session stays live while the browser step runs; Cancel ends
   // only that step.
   const renew = () => {
-    holdFocus();
     const revision = state.revision;
     setRenewal(revision);
     void run(() => {
@@ -930,7 +926,19 @@ function OrganizationSignIn({
           if (details.reason !== "trigger-press") setErrorOpen(open);
         }}
       >
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: observes focus within its buttons, so a swap can hand it on. */}
         <div
+          onFocus={(event) => {
+            handoff.current = event.target;
+          }}
+          onBlur={(event) => {
+            // Focus lost to removal has no next target; a move elsewhere has one.
+            if (
+              event.relatedTarget &&
+              !actions.current?.contains(event.relatedTarget)
+            )
+              handoff.current = null;
+          }}
           ref={(element) => {
             actions.current = element;
             // The primary action owns return focus, including SplitButton’s first half.
@@ -946,10 +954,7 @@ function OrganizationSignIn({
                 variant="subtle"
                 size="sm"
                 type="button"
-                onClick={() => {
-                  holdFocus();
-                  void run(() => identity.cancelSignIn());
-                }}
+                onClick={() => void run(() => identity.cancelSignIn())}
               >
                 Cancel
               </Button>
