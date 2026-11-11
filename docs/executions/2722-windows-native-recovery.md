@@ -1,6 +1,6 @@
 # 2722 Windows native recovery execution
 
-Status: scoped CI prepared; Windows execution pending. This receipt does not yet close G1.
+Status: approved feature branch published; Windows dispatch blocked on fork workflow registration. This receipt does not yet close G1.
 
 Requested model/reasoning: `gpt-6-astra` / `high`; runtime routing is not independently exposed.
 
@@ -45,3 +45,13 @@ Exact automatic-review reason:
 > This pushes the entire feature branch to an unverified external fork, potentially disclosing private repository contents; the user authorized Windows validation but not this external git push.
 
 Conductor now holds an explicit destination approval question with the user. No further publication attempt is authorized while it is pending. Source/test ownership returns at the documentation commit for scoped pre-CI independent review.
+
+## Approved publication and workflow registration
+
+The user explicitly approved publishing the prepared branch to public `Shipitrealgood/buzz-app` and running scoped Windows CI after the prior approval question. The pending-publication statements above are historical.
+
+Measured: `LEFTHOOK_EXCLUDE=rust-clippy BUZZ_TEST_WORKERS=2 git push fork HEAD:refs/heads/feat/2722-native-host-recovery` succeeded, terminal exit 0. Only the named local Clippy job was excluded; TypeScript/13 related tests passed (28.66-second hook) and design types/guards passed (12.17 seconds), 40.82 seconds total. Remote `git ls-remote` verifies published SHA `93f98086ea129eabfcfc3744f8eb2e184b676a04`. No main/default-branch changes occurred.
+
+Measured: scoped `gh workflow run ci.yml --repo Shipitrealgood/buzz-app --ref feat/2722-native-host-recovery -f recovery_only=true` returned HTTP 404, workflow not found on default branch. The specifically authorized `gh workflow enable ci.yml --repo Shipitrealgood/buzz-app` returned the same 404. Read-only API reports Actions `enabled=true`, `.github/workflows/ci.yml` exists on `main`, but the workflow registry has `total_count=0`. No CI run was created. The conductor owns resolving this new-fork registration prerequisite; no broader repository settings or release workflows were changed.
+
+Conductor-reported follow-up: the official Actions enable API completed HTTP 204 but the workflow list remained empty and specific `ci.yml` enable still returned 404. The conductor asked the user for the one-time fork Actions-page enablement/status. No alternate workflow, default-branch commit or retry loop was introduced. Local receipt-only edits are committed for a clean bounded pre-CI workflow review; the published source pin remains `93f98086ea129eabfcfc3744f8eb2e184b676a04`.

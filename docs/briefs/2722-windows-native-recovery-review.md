@@ -6,6 +6,7 @@ Requested: 2026-11-11. Next owner: independent Chuck reviewer after CI execution
 
 Workspace: `buzz-app-review-20261111`; branch `feat/2722-native-host-recovery`.
 Prepared CI commit: `76705969c6462d4b3eb0af2d5de7a46e7d7a9f97`.
+Published branch pin: `93f98086ea129eabfcfc3744f8eb2e184b676a04`.
 Review continuation range starts at `71741cb72131cb340ba3e295ab9c34653949a45c`.
 The final receipt/brief commit is documentation only.
 
@@ -24,9 +25,13 @@ and [accepted source review](../audits/post-audit/2722-native-host-recovery.md).
 
 Current measured state: local YAML/diff checks and applicable commit hooks passed;
 normal push hooks passed types, 13 tests and design but failed on known missing
-Linux GLib. Automatic approval review rejected external publication before retry.
-Windows execution and all artifact receipts remain pending; do not treat this
-preparation as Windows acceptance.
+Linux GLib. The initial publication rejection was resolved by explicit user approval;
+the subsequent push succeeded with only local Clippy deferred to Windows.
+Windows dispatch remains blocked: Actions enabled, default CI file exists, but
+the new fork has no registered workflows. Dispatch and specific CI enable both
+return 404. The conductor is resolving the one-time Actions-page setup. Windows
+execution and all artifact receipts remain pending; do not treat publication
+as Windows acceptance.
 
 ## Your job
 
@@ -35,7 +40,7 @@ Challenge whether the logs prove the exact app code and every finite case ran.
 The executor's self-review is not an independent gate.
 
 **Special instruction:** no Windows run exists at this publication checkpoint.
-If resumed, require the final source SHA/run SHA/artifact hashes before judging
+When GitHub registers the existing workflow, require source SHA/run SHA/artifact hashes before judging
 G1; preserve failed attempts as evidence instead of considering launch green.
 
 ## Specifically look for
@@ -66,8 +71,8 @@ No production or test-source changes. Reused the existing dependency ACL probe
 instead of adding an app-specific ACL framework. Default manual deadline remains
 20 minutes; recovery-only uses 45 for cold actual compilation. The local Clippy
 hook is proposed for relocation to equivalent affected-package Windows Clippy
-because the current Linux host lacks desktop libraries; execution/publication
-still requires resolving the recorded automatic approval rejection.
+because the current Linux host lacks desktop libraries. Publication is now
+approved and complete; execution requires resolving GitHub fork registration.
 
 ## What NOT to audit / chase
 
