@@ -335,17 +335,21 @@ export function RichComposerInput({
       profileLinks.set(start, { pubkey, label: label.replace(/^@/, "") });
       add(start, end, undefined, true);
     }
-    // A channel link is one chip, like a mention: editing never exposes its
-    // Markdown or separates its label from its channel.
-    messageLinkParts(context.text, undefined, (start, end, url) => {
-      const link = parseBuzzLink(url);
-      add(
-        start,
-        end,
-        undefined,
-        !(link?.format === "legacy" && !link.messageId),
-      );
-    });
+    // A labeled channel link is one chip, like a mention: editing never
+    // exposes its Markdown or separates its label from its channel.
+    messageLinkParts(
+      context.text,
+      (start, end, _label, url) => {
+        const link = parseBuzzLink(url);
+        add(
+          start,
+          end,
+          undefined,
+          !(link?.format === "legacy" && !link.messageId),
+        );
+      },
+      (start, end) => add(start, end, undefined, true),
+    );
     const inputs = [profiles, directory.named, directory.agents];
     if (
       referenced.current?.text !== context.text ||
