@@ -984,7 +984,8 @@ available rather than silently discarding it.
   **Save** updates a changed, non-empty key and returns to the masked view;
   **Cancel** discards the draft. Copy works without revealing.
   Leaving the page discards its displayed value and draft.
-  The trash button (**Remove key**) deletes the saved key after confirmation.
+  The trash button (**Remove key**) is unavailable while editing. Otherwise it
+  deletes the saved key after confirmation.
   You can also add or remove a key
   if the Claude integration needs installation or an update. Removing
   it does not revoke it at Anthropic. New local Claude sessions and security

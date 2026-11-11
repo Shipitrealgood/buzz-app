@@ -105,14 +105,14 @@ export function ClaudeSettings({
                   conceal={confirm || clearing || !!readError || !active()}
                   onMissing={check}
                   onSavingChange={setSaving}
-                  removeAction={
+                  removeAction={(editing) => (
                     <IconButton
                       ref={removeButton}
                       variant="destructive"
                       aria-label="Remove key"
                       title="Remove key"
                       icon={<TrashIcon size={16} aria-hidden="true" />}
-                      disabled={disabled}
+                      disabled={disabled || editing}
                       onClick={() => {
                         if (active()) {
                           setClearError("");
@@ -120,7 +120,7 @@ export function ClaudeSettings({
                         }
                       }}
                     />
-                  }
+                  )}
                 />
               ) : (
                 <SignIn

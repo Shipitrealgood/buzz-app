@@ -38,7 +38,7 @@ export function SavedClaudeKey({
   conceal: boolean;
   onMissing(): void;
   onSavingChange(saving: boolean): void;
-  removeAction: ReactNode;
+  removeAction(editing: boolean): ReactNode;
 }) {
   const { auth } = setup;
   const [value, setValue] = useState<string>();
@@ -275,7 +275,7 @@ export function SavedClaudeKey({
                 </MenuPopup>
               </MenuRoot>
             </div>
-            {removeAction}
+            {removeAction(editing)}
           </div>
         </Field>
       </div>

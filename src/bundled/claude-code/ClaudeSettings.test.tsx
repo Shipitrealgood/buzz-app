@@ -509,6 +509,10 @@ it("shows the saved key in Edit with small inline actions and Cancel discards ch
   expect(cancel).toHaveAttribute("data-size", "sm");
   expect(input.closest(".buzz-input-group")).toContainElement(save);
   expect(input.closest(".buzz-input-group")).toContainElement(cancel);
+  const remove = screen.getByRole("button", { name: "Remove key" });
+  expect(remove).toBeDisabled();
+  await user.click(remove);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "API key actions" }),
   ).not.toBeInTheDocument();
@@ -521,6 +525,7 @@ it("shows the saved key in Edit with small inline actions and Cancel discards ch
   expect(input).not.toHaveValue(native.value);
   expect(save).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "API key actions" })).toBeEnabled();
+  expect(remove).toBeEnabled();
   expect(
     native.invoke.mock.calls.some(
       ([command]) => command === "claude_api_key_set",
