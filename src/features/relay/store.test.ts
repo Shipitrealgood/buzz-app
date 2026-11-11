@@ -1171,6 +1171,27 @@ describe("creator proof reads", () => {
     }
   });
 
+  it("lets the next version read again after a cancelled creation read", async () => {
+    // A cancelled read learned nothing, so it must not back off: a cancelled
+    // lookup would otherwise hold off the channel's proof for a minute or more.
+    const time = clock();
+    const { owner, reads, receive, take } = liveSession();
+    try {
+      await receive([roster(relay, "a", [viewer.pubkey]), stream("a")]);
+      take().fail(new DOMException("Cancelled", "AbortError"));
+      await flush();
+      const at = 1_700_000_001;
+      await receive([
+        roster(relay, "a", [viewer.pubkey, keypair().pubkey], at),
+        stream("a", alice.pubkey, at),
+      ]);
+      expect(reads()).toHaveLength(1);
+    } finally {
+      owner.dispose();
+      time.restore();
+    }
+  });
+
   it("retries a missing creation with backoff until it arrives", async () => {
     // A live 39000 can precede its creation on a read replica, and a channel
     // first seen long after creation can still meet a lagging replica. No
