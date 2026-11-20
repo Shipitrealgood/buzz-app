@@ -44,6 +44,7 @@ fn undiscovered(adapter_base: String, relay: &str) -> FederatedIdentity {
 
 /// Signed in as a@example.com, through a loopback adapter that renews the
 /// session once, into b@example.com (see `renew_for_test`).
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) async fn renewing_into_another_account() -> FederatedIdentity {
     let (base, _server) = tests::adapter(vec![
         serde_json::json!({"session_token":"other-session-token","expires_at":"2099-02-01T00:00:00Z"}),
@@ -62,6 +63,7 @@ pub(crate) struct Gate {
 
 impl FederatedIdentity {
     /// Pauses the next renewal after its retirement is recorded, before it installs.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn gate_install_for_test(&self) -> Gate {
         let gate = Gate::default();
         *self.0.install_gate.lock().unwrap() = Some(gate.clone());
@@ -75,6 +77,7 @@ impl FederatedIdentity {
         }
     }
     /// Finishes a renewal through this session's adapter.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) async fn renew_for_test(&self) -> Result<(), String> {
         let revision = self.snapshot().revision;
         let cancel = self.state().cancellation.child_token();
@@ -82,6 +85,7 @@ impl FederatedIdentity {
             .await
             .map_err(|failure| failure.code.to_owned())
     }
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn email_for_test(&self) -> Option<String> {
         self.snapshot().email
     }
@@ -91,6 +95,7 @@ impl FederatedIdentity {
         state.snapshot.status = Status::SignedIn;
         state.restored = true;
     }
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn expire_for_test(&self) {
         self.retire(Status::ReauthenticationRequired, None);
     }
@@ -99,6 +104,7 @@ impl FederatedIdentity {
     }
     /// A sign-out after which the same account came back: the account is
     /// unchanged, but derived credentials are retired.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn same_account_again_for_test(&self) {
         self.state().retirements += 1;
     }
@@ -398,6 +404,7 @@ pub(crate) fn reply(status: &str, body: &str) -> String {
 }
 
 /// A configured session still restoring, as at launch; [`FederatedIdentity::finish_restore_for_test`] signs it in.
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn restoring() -> FederatedIdentity {
     tests::at_adapter(
         Arc::new(tests::Memory::default()),
@@ -406,6 +413,7 @@ pub(crate) fn restoring() -> FederatedIdentity {
 }
 impl FederatedIdentity {
     /// The restore found the saved session, as `restore` does: signed in.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn finish_restore_for_test(&self) {
         let mut state = self.state();
         self.install_session(&mut state, tests::record());

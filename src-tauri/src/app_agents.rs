@@ -387,24 +387,28 @@ impl AppAgentHost {
         host
     }
     /// Saves `agents` in place of the held ones and holds `key` too.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn also_holding_for_test(&self, path: PathBuf, agents: &[&AppAgent], key: Secret) {
         std::fs::write(path, serde_json::to_vec(agents).unwrap()).unwrap();
         self.keys().insert(key.pubkey().into(), Arc::new(key));
     }
     /// This host reading keys from `credentials`, its key cache emptied.
-    #[cfg(test)]
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn with_credentials_for_test(mut self, credentials: Arc<dyn Credentials>) -> Self {
         self.credentials = credentials;
         self.keys().clear();
         self
     }
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn forget_row_for_test(&self, pubkey: &str, relay: &str) {
         self.tokens.forget_row(pubkey, relay).unwrap();
     }
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn reopen_row_for_test(&self, pubkey: &str, relay: &str) {
         self.tokens.reopen_row(pubkey, relay).unwrap();
     }
     /// Holds every key read until dropped, pausing work that needs a key.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn hold_keys_for_test(
         &self,
     ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Secret>>> {

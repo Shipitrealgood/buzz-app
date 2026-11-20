@@ -119,7 +119,7 @@ struct Budget {
 }
 impl Caller {
     /// Whether any request has spent from its budgets.
-    #[cfg(test)]
+    #[cfg(all(test, not(windows)))]
     fn spent(&self) -> bool {
         self.budgets.iter().any(|budget| budget.tokens < BURST)
     }
@@ -436,6 +436,8 @@ impl CredentialService {
             .get_or_try_init(|| self.listen())
             .await?
             .clone();
+        #[cfg(not(unix))]
+        let _ = (home, url);
         #[cfg(unix)]
         if let Some(home) = home {
             advertise::write(&home, &self.0.instance, &url)
