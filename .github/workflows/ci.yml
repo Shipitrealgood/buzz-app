@@ -164,7 +164,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     name: Windows native validation
     runs-on: windows-2025
-    timeout-minutes: ${{ inputs.recovery_only && 45 || 20 }}
+    timeout-minutes: ${{ inputs.recovery_only && 60 || 20 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
