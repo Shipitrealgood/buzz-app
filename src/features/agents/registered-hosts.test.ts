@@ -141,4 +141,166 @@ describe("native registered host recovery", () => {
     ).rejects.toThrow("Select a community");
     expect(call).not.toHaveBeenCalled();
   });
+
+  it("invokes all 6 host provider commands within the current scope", async () => {
+    const host = "cd".repeat(32);
+    const generation = "ef".repeat(32);
+    const pubkey = "12".repeat(32);
+    const adapter = nativeRegisteredHosts(() => original);
+    const signal = new AbortController().signal;
+
+    call.mockResolvedValueOnce({
+      availability: "current",
+      catalogRevision: "aa".repeat(32),
+      expiresAt: 9999999999,
+      runtimes: [
+        {
+          runtimeId: "acp/claude",
+          harnessId: "claude",
+          availability: "available",
+          version: "1.0.0",
+          configSupported: true,
+        },
+      ],
+    });
+    const status = await adapter.status({ host, generation }, signal);
+    expect(status.runtimes[0]?.harnessId).toBe("claude");
+    expect(call).toHaveBeenLastCalledWith("registered_host_status", {
+      ...original,
+      host,
+      generation,
+    });
+
+    call.mockResolvedValueOnce({
+      pubkey,
+      picture: "https://example.test/a.png",
+    });
+    await adapter.provision(
+      {
+        host,
+        generation,
+        runtimeId: "acp/claude",
+        name: "Alpha",
+        picture: "https://example.test/a.png",
+        instructions: "Be concise",
+      },
+      signal,
+    );
+    expect(call).toHaveBeenLastCalledWith("registered_host_provision", {
+      input: {
+        ...original,
+        host,
+        generation,
+        runtimeId: "acp/claude",
+        name: "Alpha",
+        picture: "https://example.test/a.png",
+        instructions: "Be concise",
+      },
+    });
+
+    call.mockResolvedValueOnce({
+      status: "needs-setup",
+      pubkey,
+      state: "needs-login",
+      observation: null,
+      message: "Choose a model",
+    });
+    const act1 = await adapter.activate(
+      {
+        pubkey,
+        name: "Alpha",
+        nipOa: ["auth", original.owner, "", "00".repeat(64)],
+      },
+      signal,
+    );
+    expect(act1.status).toBe("needs-setup");
+    expect(call).toHaveBeenLastCalledWith("registered_host_activate", {
+      input: {
+        ...original,
+        pubkey,
+        name: "Alpha",
+        nipOa: ["auth", original.owner, "", "00".repeat(64)],
+      },
+    });
+
+    call.mockResolvedValueOnce({
+      status: "needs-setup",
+      pubkey,
+      state: "needs-login",
+      observation: null,
+      message: "Refreshed",
+    });
+    await adapter.setupState({ pubkey, refresh: true }, signal);
+    expect(call).toHaveBeenLastCalledWith("registered_host_setup_state", {
+      ...original,
+      pubkey,
+      refresh: true,
+    });
+
+    call.mockResolvedValueOnce(undefined);
+    await adapter.profile(
+      { pubkey, name: "Alpha 2", picture: "https://example.test/b.png" },
+      signal,
+    );
+    expect(call).toHaveBeenLastCalledWith("registered_host_profile", {
+      input: {
+        ...original,
+        pubkey,
+        name: "Alpha 2",
+        picture: "https://example.test/b.png",
+      },
+    });
+
+    call.mockResolvedValueOnce(undefined);
+    await adapter.remove({ pubkey }, signal);
+    expect(call).toHaveBeenLastCalledWith("registered_host_remove", {
+      ...original,
+      pubkey,
+    });
+  });
+
+  it("fences late replies on scope change for status and activate", async () => {
+    let scope: RegisteredHostScope | undefined = original;
+    let resolve!: (value: unknown) => void;
+    call.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const adapter = nativeRegisteredHosts(() => scope);
+    const p = adapter.status(
+      { host: "cd".repeat(32), generation: "ef".repeat(32) },
+      new AbortController().signal,
+    );
+    const rejected = expect(p).rejects.toThrow("scope changed");
+    scope = { ...original, owner: "cd".repeat(32) };
+    resolve({
+      availability: "current",
+      catalogRevision: null,
+      expiresAt: 0,
+      runtimes: [],
+    });
+    await rejected;
+  });
+
+  it("omits null or missing picture from provision replies", async () => {
+    const adapter = nativeRegisteredHosts(() => original);
+    const signal = new AbortController().signal;
+    const base = {
+      host: "cd".repeat(32),
+      generation: "ef".repeat(32),
+      runtimeId: "acp/claude",
+      name: "Alpha",
+    };
+    call.mockResolvedValueOnce({ pubkey: "11".repeat(32), picture: null });
+    const withNull = await adapter.provision(base, signal);
+    expect(withNull).toEqual({ pubkey: "11".repeat(32) });
+    expect("picture" in withNull).toBe(false);
+
+    call.mockResolvedValueOnce({ pubkey: "22".repeat(32) });
+    const withOmitted = await adapter.provision(base, signal);
+    expect(withOmitted).toEqual({ pubkey: "22".repeat(32) });
+    expect("picture" in withOmitted).toBe(false);
+  });
 });

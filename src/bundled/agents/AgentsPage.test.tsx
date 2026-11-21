@@ -3464,6 +3464,103 @@ it("shows an agent on another device read-only, and offers only Finish setup and
   expect(screen.getByRole("grid")).toBeInTheDocument();
 });
 
+it("reopens an unfinished hosted CreateConfiguration agent in AgentCreateDialog instead of blind finish", async () => {
+  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
+    "./registeredHostType"
+  );
+  const hostedType: RegisteredAgentType = {
+    ...createRegisteredHostType({
+      recover: vi.fn(),
+      status: vi.fn(),
+      provision: vi.fn(),
+      activate: vi.fn(),
+      setupState: vi.fn(),
+      profile: vi.fn(),
+      remove: vi.fn(),
+    }),
+    key: REGISTERED_HOST_TYPE_KEY,
+    pluginId: "buzz.agents",
+    revision: "1",
+  } as unknown as RegisteredAgentType;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const unfinishedHosted: Agent = {
+    ...agent("Netcup Bot", 9),
+    type: REGISTERED_HOST_TYPE_KEY,
+    place: "hosted",
+    unfinished: true,
+    attention: {},
+    config: {
+      host: "cd".repeat(32),
+      generation: "ef".repeat(32),
+      hostLabel: "Netcup",
+      runtimeId: "acp/claude",
+      harnessId: "claude",
+      instructions: "Locked prompt",
+      modelId: "",
+      effort: "",
+      pubkey: agent("Netcup Bot", 9).pubkey,
+      frozen: true,
+      observation: {
+        expiresAt: nowSec + 120,
+        readiness: "logged-in",
+        availability: "available",
+        modelsState: "available",
+        unavailableReason: null,
+        models: [
+          { id: "claude-sonnet", name: "Claude Sonnet", description: null },
+        ],
+      },
+    },
+  };
+  const { agents } = setup([unfinishedHosted], { more: [hostedType] });
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Netcup Bot"));
+  await user.click(screen.getByRole("button", { name: "Finish setup" }));
+  expect(agents.finish).not.toHaveBeenCalled();
+  const dialog = await screen.findByRole("dialog", {
+    name: "Finish Netcup Bot",
+  });
+  expect(within(dialog).getByLabelText("Name")).toBeDisabled();
+  expect(
+    within(dialog).getByRole("combobox", { name: "Run on" }),
+  ).toBeDisabled();
+});
+
+it("renders Delete agent and Public key in AgentDetails Settings for an active registered-host agent", async () => {
+  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
+    "./registeredHostType"
+  );
+  const hostedType: RegisteredAgentType = {
+    ...createRegisteredHostType({
+      recover: vi.fn(),
+      status: vi.fn(),
+      provision: vi.fn(),
+      activate: vi.fn(),
+      setupState: vi.fn(),
+      profile: vi.fn(),
+      remove: vi.fn(),
+    }),
+    key: REGISTERED_HOST_TYPE_KEY,
+    pluginId: "buzz.agents",
+    revision: "1",
+  } as unknown as RegisteredAgentType;
+  const activeHosted: Agent = {
+    ...agent("Netcup Live", 10),
+    type: REGISTERED_HOST_TYPE_KEY,
+    place: "hosted",
+    attention: {},
+  };
+  setup([activeHosted], { more: [hostedType] });
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Netcup Live"));
+  await user.click(screen.getByRole("tab", { name: "Settings" }));
+  expect(screen.getByText("Registered host")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Delete agent" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Public key")).toBeInTheDocument();
+});
+
 it("moves focus from Finish setup to the first tab once the setup finishes", async () => {
   const user = userEvent.setup();
   const finished: Agent = {

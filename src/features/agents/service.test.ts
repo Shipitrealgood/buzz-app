@@ -10600,6 +10600,50 @@ it("deletes an unfinished hosted agent from its community too, as its profile ma
   expect(service.find(hostedKey)).toBeUndefined();
 });
 
+it("keeps an unfinished hosted agent with updated config on incomplete activation and finishes with selected model", async () => {
+  const { service, plugin } = await setup();
+  const { type, remote } = cloud();
+  const activate = vi.fn<NonNullable<typeof type.remote>["activate"]>(
+    async () => {},
+  );
+  plugin.agents.register({
+    ...type,
+    remote: { ...remote, activate },
+  });
+  const initialConfig = { host: "h1", runtimeId: "acp/claude", modelId: "" };
+  const preparedConfig = {
+    ...initialConfig,
+    pubkey: hostedKey,
+    frozen: true,
+    observation: { models: [{ id: "claude-sonnet" }] },
+  };
+  activate.mockResolvedValueOnce({
+    status: "incomplete",
+    config: preparedConfig,
+    reason: "Choose a model",
+  });
+  const pending = await service.create({
+    type: "example/cloud",
+    name: "Sky",
+    config: initialConfig,
+  });
+  expect(pending.unfinished).toBe(true);
+  expect(pending.config).toEqual(preparedConfig);
+  expect(records.publish).not.toHaveBeenCalled();
+
+  const selectedConfig = { ...preparedConfig, modelId: "claude-sonnet" };
+  activate.mockResolvedValueOnce(undefined);
+  const finished = await service.finish(hostedKey, { config: selectedConfig });
+  expect(finished.unfinished).toBeUndefined();
+  expect(activate).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      pubkey: hostedKey,
+      config: selectedConfig,
+    }),
+  );
+  expect(records.publish).toHaveBeenCalledTimes(1);
+});
+
 it("offers Stop for a finished hosted agent whose provider can stop its turns", async () => {
   const { service, plugin } = await setup();
   const { type, remote } = cloud();
@@ -17404,4 +17448,69 @@ it("tells a transcript only of an agent's new or changed steps", async () => {
   stop();
   two.step("Read", "c.txt");
   expect(listener).toHaveBeenCalledTimes(3);
+});
+
+it("creates a registered-host agent when provision omits picture", async () => {
+  const { service, plugin, session } = await setup();
+  const { type, remote } = cloud();
+  (type.remote as { idempotentProvision?: boolean }).idempotentProvision = true;
+  remote.provision.mockResolvedValueOnce({ pubkey: hostedKey });
+  plugin.agents.register(type);
+  const agent = await service.create({
+    type: "example/cloud",
+    name: "Sky",
+    config: { host: "a".repeat(64) },
+  });
+  expect(agent.picture).toBeUndefined();
+  expect(records.publish).toHaveBeenLastCalledWith(
+    session,
+    { pubkey: hostedKey, name: "Sky", runtime: "example/cloud" },
+    expect.any(AbortSignal),
+  );
+});
+
+it("refuses conflicting same-name unfinished setup without mutating frozen config", async () => {
+  const storage = memoryStorage();
+  const { service, plugin } = await setup({ storage });
+  const { type, remote } = cloud();
+  const frozenCfg = {
+    host: "a".repeat(64),
+    runtimeId: "acp/claude",
+    frozen: true,
+  };
+  (type.remote as { idempotentProvision?: boolean }).idempotentProvision = true;
+  (remote.activate as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    status: "incomplete",
+    reason: "Choose a model",
+    config: frozenCfg,
+  });
+  plugin.agents.register(type);
+
+  const pending = await service.create({
+    type: "example/cloud",
+    name: "Sky",
+    config: { host: "a".repeat(64), runtimeId: "acp/claude" },
+  });
+  expect(pending.unfinished).toBe(true);
+  expect(service.find(hostedKey)?.config).toEqual(frozenCfg);
+
+  remote.provision.mockRejectedValueOnce(
+    new Error(
+      "Pending setup for 'Sky' is already bound to another host or harness",
+    ),
+  );
+  await expect(
+    service.create({
+      type: "example/cloud",
+      name: "Sky",
+      config: { host: "b".repeat(64), runtimeId: "acp/codex" },
+    }),
+  ).rejects.toThrow("already bound to another host or harness");
+  expect(remote.provision).toHaveBeenCalledTimes(2);
+  expect(remote.activate).toHaveBeenCalledTimes(1);
+  expect(service.find(hostedKey)?.config).toEqual(frozenCfg);
+  expect(storage.getItem("buzz.agents.unfinished.v1")).toContain("acp/claude");
+  expect(storage.getItem("buzz.agents.unfinished.v1")).not.toContain(
+    "acp/codex",
+  );
 });

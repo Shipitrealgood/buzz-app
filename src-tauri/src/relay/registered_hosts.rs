@@ -167,7 +167,7 @@ impl<'a> Session<'a> {
                 // Hold the existing identity lock through signing, so logout
                 // cannot retire the key between admission and the signature.
                 self.with_keys(|keys| {
-                    Ok(buzz_ws_client::build_auth_event(
+                    Ok(buzz_ws_client::build_auth_event_with_keys(
                         challenge, url, &keys, None,
                     )?)
                 })
@@ -295,6 +295,9 @@ pub(crate) async fn registered_host_recover<R: tauri::Runtime>(
     };
     operation.await.map_err(|_| UNAVAILABLE.into())
 }
+
+mod provider;
+pub(crate) use provider::*;
 
 #[cfg(test)]
 mod tests;

@@ -2,7 +2,7 @@ use super::*;
 use buzz_core::host_registry::{self as wire, Body, Query, Reply};
 use buzz_paired_owner::{registry::RegistryBinding, Scope};
 use futures_util::{SinkExt, StreamExt};
-use nostr_registry::{Event, Timestamp};
+use nostr_registry::{Event, PublicKey, Timestamp};
 use serde_json::{json, Value};
 
 const COMMUNITY: &str = "https://example.org";
@@ -291,4 +291,648 @@ async fn signed_read_recovers_and_reopens_without_runtime_readiness_or_inventory
             .unwrap();
         assert_eq!(count, 0, "recovery wrote {table}");
     }
+}
+
+fn seed_paired_host(device: &mut Device, owner: &Keys, host: &Keys, community: &str) -> Scope {
+    use buzz_core::paired_host::{build_ack, verify_claim, Offer};
+    use buzz_core::paired_message::Route;
+    let now_s = Timestamp::now().as_secs();
+    let (offer, proof) = Offer::issue(community.into(), host.public_key(), now_s).unwrap();
+    let inv = json!({
+        "v": 1,
+        "community": community,
+        "generation": offer.generation,
+        "host": offer.host.to_hex(),
+        "expires_at": offer.expires_at,
+        "proof": *proof.expose_hex(),
+    })
+    .to_string();
+    let (scope, claim) = device.pair(community, owner, &inv).unwrap();
+    let verified = verify_claim(
+        claim.event.get().as_bytes(),
+        host,
+        &offer,
+        Some(owner.public_key()),
+        &proof.digest(),
+        now_s,
+    )
+    .unwrap();
+    let ack_ev = build_ack(host, &verified, now_s).unwrap();
+    let ack = buzz_paired_owner::Packet {
+        event: serde_json::value::to_raw_value(&ack_ev).unwrap(),
+        route: Route {
+            r: None,
+            prev: Some(scope.generation.clone()),
+            expires_at: offer.expires_at,
+        },
+    };
+    let claim_id = serde_json::from_str::<Event>(claim.event.get())
+        .unwrap()
+        .id
+        .to_hex();
+    let mut fixed_ack = ack;
+    fixed_ack.route.prev = Some(claim_id);
+    let binding = buzz_paired_owner::Binding {
+        generation: scope.generation.clone(),
+        host: scope.host.to_hex(),
+        owner: scope.owner.to_hex(),
+        state: "active".into(),
+        claim,
+        ack: fixed_ack,
+        tombstone: None,
+        inventory: None,
+        high_water: None,
+    };
+    device.restore(community, owner, &binding).unwrap();
+    scope
+}
+
+#[tokio::test]
+async fn provision_replays_same_identity_and_refuses_host_or_runtime_mismatch() {
+    let identity = IdentityHost::fixture();
+    let owner = keys(1);
+    let host_a = keys(2);
+    let host_b = keys(3);
+    let session = Session::capture(&identity, owner.public_key().to_hex(), COMMUNITY.into())
+        .await
+        .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(root.path()).unwrap();
+    let device = journal.device.as_mut().unwrap();
+    let scope_a = seed_paired_host(device, &owner, &host_a, COMMUNITY);
+    let scope_b = seed_paired_host(device, &owner, &host_b, COMMUNITY);
+
+    let first = provider::provision_inner(
+        &session,
+        device,
+        provider::ProvisionInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            host: scope_a.host.to_hex(),
+            generation: scope_a.generation.clone(),
+            runtime_id: "acp/claude".into(),
+            name: "  Alpha  ".into(),
+            picture: Some("https://example.test/a.png".into()),
+            instructions: Some("initial".into()),
+            effort: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(first.picture.as_deref(), Some("https://example.test/a.png"));
+
+    let replay = provider::provision_inner(
+        &session,
+        device,
+        provider::ProvisionInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            host: scope_a.host.to_hex(),
+            generation: scope_a.generation.clone(),
+            runtime_id: "acp/claude".into(),
+            name: "Alpha".into(),
+            picture: Some("https://example.test/other.png".into()),
+            instructions: Some("updated".into()),
+            effort: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(replay.pubkey, first.pubkey);
+    assert_eq!(replay.picture, first.picture);
+
+    // Host mismatch refused
+    assert!(provider::provision_inner(
+        &session,
+        device,
+        provider::ProvisionInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            host: scope_b.host.to_hex(),
+            generation: scope_b.generation,
+            runtime_id: "acp/claude".into(),
+            name: "Alpha".into(),
+            picture: None,
+            instructions: None,
+            effort: None,
+        },
+    )
+    .is_err());
+
+    // Runtime mismatch refused
+    assert!(provider::provision_inner(
+        &session,
+        device,
+        provider::ProvisionInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            host: scope_a.host.to_hex(),
+            generation: scope_a.generation,
+            runtime_id: "acp/codex".into(),
+            name: "Alpha".into(),
+            picture: None,
+            instructions: None,
+            effort: None,
+        },
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn agent_authenticated_kind0_publication_uses_agent_keys_and_nip_oa_auth_tag() {
+    let owner = keys(1);
+    let agent = keys(5);
+    let identity = IdentityHost::fixture();
+    let nip_oa = identity
+        .authorize_agent(owner.public_key().to_hex(), agent.public_key().to_hex())
+        .await
+        .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let expected_agent = agent.public_key();
+    let expected_oa = nip_oa.clone();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        ws.send(json!(["AUTH", "ch1"]).to_string().into())
+            .await
+            .unwrap();
+        let auth_raw = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        let auth_msg: Value = serde_json::from_str(&auth_raw).unwrap();
+        assert_eq!(auth_msg[0], "AUTH");
+        let auth_ev: Event = serde_json::from_value(auth_msg[1].clone()).unwrap();
+        auth_ev.verify().unwrap();
+        assert_eq!(auth_ev.pubkey, expected_agent);
+        assert!(auth_ev
+            .tags
+            .iter()
+            .any(|t| t.as_slice() == expected_oa.as_slice()));
+        ws.send(json!(["OK", auth_ev.id, true, ""]).to_string().into())
+            .await
+            .unwrap();
+
+        let ev_raw = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        let ev_msg: Value = serde_json::from_str(&ev_raw).unwrap();
+        assert_eq!(ev_msg[0], "EVENT");
+        let ev: Event = serde_json::from_value(ev_msg[1].clone()).unwrap();
+        ev.verify().unwrap();
+        assert_eq!(ev.kind.as_u16(), 0);
+        assert_eq!(ev.pubkey, expected_agent);
+        assert!(ev
+            .tags
+            .iter()
+            .any(|t| t.as_slice() == expected_oa.as_slice()));
+        let profile: Value = serde_json::from_str(&ev.content).unwrap();
+        assert_eq!(profile["name"], "Alpha");
+        assert_eq!(profile["display_name"], "Alpha");
+        assert_eq!(profile["bot"], true);
+        assert_eq!(profile["picture"], "https://example.test/a.png");
+        ws.send(json!(["OK", ev.id, true, ""]).to_string().into())
+            .await
+            .unwrap();
+    });
+
+    let created = provider::publish_kind0_over_ws(
+        &format!("ws://{addr}"),
+        &agent,
+        &nip_oa,
+        "Alpha",
+        Some("https://example.test/a.png"),
+        100,
+    )
+    .await
+    .unwrap();
+    assert!(created >= 100);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn activate_profile_and_remove_lifecycle_with_tombstone() {
+    use buzz_core::{
+        agent_models::{AgentModelInfo, AgentModelsResponse},
+        harness::{AcpAvailabilityStatus, Readiness, RuntimeFacts},
+        host_deployment::{
+            observation::{LoginState, Models, Observation, ResultBody},
+            wire, Availability, Capability, DeploymentResult, Outcome, Status as HostStatus,
+        },
+    };
+    let identity = IdentityHost::fixture();
+    let owner = keys(1);
+    let host = keys(2);
+    let relay = keys(3);
+    let session = Session::capture(&identity, owner.public_key().to_hex(), COMMUNITY.into())
+        .await
+        .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(root.path()).unwrap();
+    let device = journal.device.as_mut().unwrap();
+    let scope = seed_paired_host(device, &owner, &host, COMMUNITY);
+
+    let prov = provider::provision_inner(
+        &session,
+        device,
+        provider::ProvisionInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            host: scope.host.to_hex(),
+            generation: scope.generation.clone(),
+            runtime_id: "acp/claude".into(),
+            name: "Netcup Agent".into(),
+            picture: Some("https://example.test/a.png".into()),
+            instructions: Some("You are helpful.".into()),
+            effort: None,
+        },
+    )
+    .unwrap();
+    let agent_pk = PublicKey::from_hex(&prov.pubkey).unwrap();
+    let nip_oa_1: [String; 4] = identity
+        .authorize_agent(owner.public_key().to_hex(), prov.pubkey.clone())
+        .await
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    // Kind 0 mock relay
+    let kind0_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
+    let kind0_store = kind0_events.clone();
+    let kind0_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let kind0_addr = kind0_listener.local_addr().unwrap();
+    let kind0_srv = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = kind0_listener.accept().await else {
+                break;
+            };
+            let store = kind0_store.clone();
+            tokio::spawn(async move {
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                ws.send(json!(["AUTH", "k0"]).to_string().into())
+                    .await
+                    .unwrap();
+                while let Some(Ok(msg)) = ws.next().await {
+                    if !msg.is_text() {
+                        continue;
+                    }
+                    let Ok(txt) = msg.into_text() else { continue };
+                    let frame: Value = serde_json::from_str(&txt).unwrap();
+                    match frame[0].as_str().unwrap() {
+                        "AUTH" => {
+                            let ev: Event = serde_json::from_value(frame[1].clone()).unwrap();
+                            ws.send(json!(["OK", ev.id, true, ""]).to_string().into())
+                                .await
+                                .unwrap();
+                        }
+                        "EVENT" => {
+                            let ev: Event = serde_json::from_value(frame[1].clone()).unwrap();
+                            let id = ev.id;
+                            store.lock().unwrap().push(ev);
+                            ws.send(json!(["OK", id, true, ""]).to_string().into())
+                                .await
+                                .unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+
+    // 43104 mock relay
+    let now_s = Timestamp::now().as_secs();
+    let catalog_rev = "cd".repeat(32);
+    let status = HostStatus {
+        scope: scope.clone(),
+        availability: Availability::Current,
+        capability: Capability::Supported {
+            catalog_revision: catalog_rev.clone(),
+            runtimes: vec!["acp/claude".into()],
+            harnesses: [("acp/claude".into(), "claude".into())].into(),
+        },
+        inventory: Some(
+            [(
+                "acp/claude".into(),
+                RuntimeFacts {
+                    availability: AcpAvailabilityStatus::Available,
+                    version: Some("1.0.0".into()),
+                    config_supported: true,
+                },
+            )]
+            .into(),
+        ),
+        expires_at: now_s + 120,
+    };
+    let status_ev = wire::status(&host, &status, now_s).unwrap();
+    let ops = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        Value,
+    >::new()));
+    let ops_srv = ops.clone();
+    let current_revision = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+    let rev_srv = current_revision.clone();
+    let phase_mode = std::sync::Arc::new(std::sync::Mutex::new("needs-login".to_string()));
+    let phase_srv = phase_mode.clone();
+    let owner_pk = owner.public_key();
+    let relay_srv = relay.clone();
+    let host_srv = host.clone();
+    let scope_srv = scope.clone();
+    let cat_rev_srv = catalog_rev.clone();
+    let mgmt_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mgmt_addr = mgmt_listener.local_addr().unwrap();
+    let mgmt_srv = tokio::spawn(async move {
+        let (stream, _) = mgmt_listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        while let Some(Ok(msg)) = ws.next().await {
+            if !msg.is_text() {
+                continue;
+            }
+            let Ok(txt) = msg.into_text() else { continue };
+            let frame: Value = serde_json::from_str(&txt).unwrap();
+            match frame[0].as_str().unwrap() {
+                "EVENT" => {
+                    let ev: Event = serde_json::from_value(frame[1].clone()).unwrap();
+                    let ev_str = serde_json::to_string(&ev).unwrap();
+                    let (_, wire::Header::Command { authority }) =
+                        wire::verify(ev_str.as_bytes(), COMMUNITY, owner_pk).unwrap()
+                    else {
+                        panic!("expected command");
+                    };
+                    let mode = phase_srv.lock().unwrap().clone();
+                    let t = Timestamp::now().as_secs();
+                    let entry = match mode.as_str() {
+                        "needs-login" => {
+                            *rev_srv.lock().unwrap() = 1;
+                            let body = ResultBody {
+                                result: DeploymentResult {
+                                    request: authority.clone(),
+                                    outcome: Outcome::NeedsLogin,
+                                    applied_revision: Some(1),
+                                },
+                                observation: Some(Observation {
+                                    scope: scope_srv.clone(),
+                                    agent: agent_pk,
+                                    runtime_id: "acp/claude".into(),
+                                    catalog_revision: cat_rev_srv.clone(),
+                                    operation_id: authority.operation_id.clone(),
+                                    revision: 1,
+                                    action_id: "aa".repeat(32),
+                                    observed_at: t,
+                                    expires_at: t + 120,
+                                    login: LoginState::NotObserved,
+                                    login_at: None,
+                                    readiness: Some(Readiness::LoggedIn),
+                                    availability: Some(AcpAvailabilityStatus::Available),
+                                    models: Models::Available {
+                                        catalog: AgentModelsResponse {
+                                            agent_name: "Claude".into(),
+                                            agent_version: "1.0".into(),
+                                            supports_switching: true,
+                                            models: vec![AgentModelInfo {
+                                                id: "claude-sonnet".into(),
+                                                name: Some("Claude Sonnet".into()),
+                                                description: None,
+                                            }],
+                                            agent_default_model: None,
+                                            selected_model: None,
+                                        },
+                                    },
+                                }),
+                            };
+                            let receipt = wire::result_body(&host_srv, &body, t).unwrap();
+                            json!({
+                                "event": ev_str,
+                                "result": serde_json::to_string(&receipt).unwrap(),
+                                "state": "needs-login",
+                                "unit_id": "ef".repeat(32),
+                                "revision": 1
+                            })
+                        }
+                        "applied" => {
+                            *rev_srv.lock().unwrap() = 2;
+                            let receipt = wire::result(
+                                &host_srv,
+                                &DeploymentResult {
+                                    request: authority.clone(),
+                                    outcome: Outcome::Applied,
+                                    applied_revision: Some(2),
+                                },
+                                t,
+                            )
+                            .unwrap();
+                            json!({
+                                "event": ev_str,
+                                "result": serde_json::to_string(&receipt).unwrap(),
+                                "state": "applied",
+                                "unit_id": "ef".repeat(32),
+                                "revision": 2
+                            })
+                        }
+                        "cleaned" => {
+                            *rev_srv.lock().unwrap() = 3;
+                            let receipt = wire::result(
+                                &host_srv,
+                                &DeploymentResult {
+                                    request: authority.clone(),
+                                    outcome: Outcome::Cleaned,
+                                    applied_revision: Some(3),
+                                },
+                                t,
+                            )
+                            .unwrap();
+                            json!({
+                                "event": ev_str,
+                                "result": serde_json::to_string(&receipt).unwrap(),
+                                "state": "cleaned",
+                                "unit_id": "ef".repeat(32),
+                                "revision": 3
+                            })
+                        }
+                        other => panic!("unexpected mode {other}"),
+                    };
+                    ops_srv
+                        .lock()
+                        .unwrap()
+                        .insert(authority.operation_id.clone(), entry);
+                    ws.send(json!(["OK", ev.id, true, ""]).to_string().into())
+                        .await
+                        .unwrap();
+                }
+                "REQ" => {
+                    let sub = frame[1].as_str().unwrap();
+                    let q: wire::Query =
+                        serde_json::from_value(frame[2]["host_deployment"].clone()).unwrap();
+                    let data = match q.view.as_str() {
+                        "status" => json!({ "event": serde_json::to_string(&status_ev).unwrap() }),
+                        "operation" => {
+                            let op = q.operation_id.as_deref().unwrap();
+                            let latest_rev = *rev_srv.lock().unwrap();
+                            ops_srv
+                                .lock()
+                                .unwrap()
+                                .get(op)
+                                .cloned()
+                                .map(|mut entry| {
+                                    entry["revision"] = json!(latest_rev);
+                                    entry
+                                })
+                                .unwrap_or_else(|| json!({"state": "missing-or-superseded"}))
+                        }
+                        other => panic!("unexpected view {other}"),
+                    };
+                    let reply = wire::reply(
+                        &relay_srv,
+                        q.scope.owner,
+                        &wire::Reply {
+                            query: q,
+                            expires_at: Timestamp::now().as_secs() + wire::PERMIT_SECONDS,
+                            data,
+                        },
+                        Timestamp::now().as_secs(),
+                    )
+                    .unwrap();
+                    ws.send(json!(["EVENT", sub, reply]).to_string().into())
+                        .await
+                        .unwrap();
+                    ws.send(json!(["EOSE", sub]).to_string().into())
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let ws = NostrWsConnection::connect(&format!("ws://{mgmt_addr}"))
+        .await
+        .unwrap();
+    let mut mgmt = buzz_paired_owner::deployment::Management::from_authenticated(
+        true,
+        COMMUNITY,
+        owner.public_key(),
+        relay.public_key(),
+        ws,
+    )
+    .unwrap();
+    let k0_url = format!("ws://{kind0_addr}");
+
+    // 1. PendingLogin activate -> NeedsSetup
+    let res1 = provider::activate_inner(
+        &session,
+        device,
+        &mut mgmt,
+        provider::ActivateInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            pubkey: prov.pubkey.clone(),
+            name: "Netcup Agent".into(),
+            nip_oa: nip_oa_1.clone(),
+            host: Some(scope.host.to_hex()),
+            generation: Some(scope.generation.clone()),
+            runtime_id: Some("acp/claude".into()),
+            model_id: None,
+            effort: None,
+        },
+        Some(&k0_url),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res1, provider::ActivateResult::NeedsSetup { .. }));
+    assert_eq!(kind0_events.lock().unwrap().len(), 1);
+
+    // 2. Selected activate with a separate authorize_agent call (distinct aux_rand) + effort -> Applied
+    let nip_oa_2: [String; 4] = identity
+        .authorize_agent(owner.public_key().to_hex(), prov.pubkey.clone())
+        .await
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_ne!(nip_oa_2, nip_oa_1);
+    *phase_mode.lock().unwrap() = "applied".into();
+    let res2 = provider::activate_inner(
+        &session,
+        device,
+        &mut mgmt,
+        provider::ActivateInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            pubkey: prov.pubkey.clone(),
+            name: "Netcup Agent".into(),
+            nip_oa: nip_oa_2,
+            host: Some(scope.host.to_hex()),
+            generation: Some(scope.generation.clone()),
+            runtime_id: Some("acp/claude".into()),
+            model_id: Some("claude-sonnet".into()),
+            effort: Some("high".into()),
+        },
+        Some(&k0_url),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res2, provider::ActivateResult::Applied { .. }));
+
+    // 3. Profile rename publishes agent-signed kind 0 without redeploy
+    provider::profile_inner(
+        &session,
+        device,
+        provider::ProfileInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            pubkey: prov.pubkey.clone(),
+            name: "Renamed Netcup".into(),
+            picture: Some("https://example.test/b.png".into()),
+        },
+        Some(&k0_url),
+    )
+    .await
+    .unwrap();
+    assert_eq!(kind0_events.lock().unwrap().len(), 2);
+
+    // 4. Remove cleans up and retains retired tombstone
+    *phase_mode.lock().unwrap() = "cleaned".into();
+    provider::remove_inner(&session, device, None, Some(&mut mgmt), &prov.pubkey)
+        .await
+        .unwrap();
+    let retired = device
+        .reservation(COMMUNITY, &owner, &agent_pk)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retired.state,
+        buzz_paired_owner::deployment::ReservationState::Retired
+    );
+    assert!(retired.agent_nsec.is_none());
+    assert!(retired.nip_oa.is_none());
+
+    // Subsequent activate/profile refused after retirement
+    assert!(provider::profile_inner(
+        &session,
+        device,
+        provider::ProfileInput {
+            community: COMMUNITY.into(),
+            owner: owner.public_key().to_hex(),
+            pubkey: prov.pubkey.clone(),
+            name: "Late".into(),
+            picture: None,
+        },
+        Some(&k0_url),
+    )
+    .await
+    .is_err());
+
+    drop(mgmt);
+    mgmt_srv.abort();
+    kind0_srv.abort();
+}
+
+#[test]
+fn provision_result_omits_none_picture_field() {
+    let omitted = serde_json::to_value(provider::ProvisionResult {
+        pubkey: "aa".repeat(32),
+        picture: None,
+    })
+    .unwrap();
+    assert!(omitted.get("picture").is_none());
+    let present = serde_json::to_value(provider::ProvisionResult {
+        pubkey: "aa".repeat(32),
+        picture: Some("https://example.test/a.png".into()),
+    })
+    .unwrap();
+    assert_eq!(present["picture"], "https://example.test/a.png");
 }

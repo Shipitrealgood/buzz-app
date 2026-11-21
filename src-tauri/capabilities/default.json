@@ -4,6 +4,12 @@
   "description": "Allow the main application commands, title bar controls and external HTTP(S) links.",
   "permissions": [
     "allow-registered-host-recover",
+    "allow-registered-host-status",
+    "allow-registered-host-provision",
+    "allow-registered-host-activate",
+    "allow-registered-host-setup-state",
+    "allow-registered-host-profile",
+    "allow-registered-host-remove",
     "allow-huddle-window-reset-incoming",
     "allow-huddle-window-open",
     "allow-huddle-window-update",

@@ -1726,3 +1726,444 @@ it("shows an agent card's pack avatar as that Gloopie", () => {
     "true",
   );
 });
+
+it("slots Run on before Harness, clears stale selections on switch, prepares in-place, and finishes with observed model", async () => {
+  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
+    "./registeredHostType"
+  );
+  const owner = "ab".repeat(32);
+  const community = "https://example.org";
+  const hostA = {
+    owner,
+    community,
+    host: "cd".repeat(32),
+    generation: "ef".repeat(32),
+    label: "Netcup",
+    registration: "registered" as const,
+    availability: "unavailable" as const,
+  };
+  const hostB = {
+    owner,
+    community,
+    host: "12".repeat(32),
+    generation: "34".repeat(32),
+    label: "Backup",
+    registration: "registered" as const,
+    availability: "unavailable" as const,
+  };
+  const pubkey = "99".repeat(32);
+  const hostsClient = {
+    recover: vi.fn(),
+    status: vi.fn(async ({ host }: { host: string }) => ({
+      availability: "current" as const,
+      catalogRevision: "aa".repeat(32),
+      expiresAt: Math.floor(Date.now() / 1000) + 120,
+      runtimes: [
+        {
+          runtimeId: host === hostA.host ? "acp/claude" : "acp/codex",
+          harnessId: host === hostA.host ? "claude" : "codex",
+          availability: "available" as const,
+          version: "1.0.0",
+          configSupported: true,
+        },
+      ],
+    })),
+    provision: vi.fn(),
+    activate: vi.fn(),
+    setupState: vi.fn(),
+    profile: vi.fn(),
+    remove: vi.fn(),
+  };
+  const localNotes = {
+    ...notes,
+    carry: (config: Notes) => ({ instructions: config.instructions }),
+  } as unknown as RegisteredAgentType;
+  const hostedType = {
+    ...createRegisteredHostType(hostsClient),
+    key: REGISTERED_HOST_TYPE_KEY,
+    pluginId: "buzz.agents",
+    revision: "1",
+  } as unknown as RegisteredAgentType;
+
+  const unfinishedAgent: Agent = {
+    key: pubkey,
+    pubkey,
+    name: "Netcup Agent",
+    type: REGISTERED_HOST_TYPE_KEY,
+    owner,
+    relay: "wss://example.org",
+    place: "hosted",
+    unfinished: true,
+    attention: {},
+    skipped: {},
+    timers: {},
+    attentionEnabled: false,
+    config: {
+      host: hostA.host,
+      generation: hostA.generation,
+      hostLabel: "Netcup",
+      runtimeId: "acp/claude",
+      harnessId: "claude",
+      instructions: "Carry me",
+      modelId: "",
+      effort: "",
+      pubkey,
+      frozen: true,
+      observation: {
+        expiresAt: Math.floor(Date.now() / 1000) + 120,
+        readiness: "logged-in",
+        availability: "available",
+        modelsState: "available",
+        unavailableReason: null,
+        models: [
+          { id: "claude-sonnet", name: "Claude Sonnet", description: null },
+        ],
+      },
+    },
+  };
+  const { unfinished: _drop, ...finishedBase } = unfinishedAgent;
+  const finishedAgent: Agent = finishedBase;
+  const agents = {
+    create: vi.fn(async () => unfinishedAgent),
+    finish: vi.fn(async () => finishedAgent),
+  } as unknown as Agents & {
+    create: ReturnType<typeof vi.fn>;
+    finish: ReturnType<typeof vi.fn>;
+  };
+  const onCreated = vi.fn();
+
+  render(
+    <AgentCreateDialog
+      agents={agents}
+      types={[localNotes, echo, hostedType]}
+      loadRegisteredHosts={async () => [hostA, hostB]}
+      onClose={vi.fn()}
+      onCreated={onCreated}
+    />,
+  );
+  const user = userEvent.setup();
+  const dialog = screen.getByRole("dialog", { name: "Create agent" });
+
+  // Local Harness list hides internal Registered host type.
+  await user.click(within(dialog).getByRole("combobox", { name: "Harness" }));
+  expect(
+    screen.queryByRole("option", { name: /Registered host/i }),
+  ).not.toBeInTheDocument();
+  await user.keyboard("{Escape}");
+
+  // Type instructions on local harness, then switch Run on to Netcup.
+  await user.type(within(dialog).getByLabelText("Name"), "Netcup Agent");
+  const instructionsInput = within(dialog).getByLabelText("Instructions");
+  await user.clear(instructionsInput);
+  await user.type(instructionsInput, "Carry me");
+  const runOnBox = await within(dialog).findByRole("combobox", {
+    name: "Run on",
+  });
+  await user.click(runOnBox);
+  await user.click(await screen.findByRole("option", { name: "Netcup" }));
+  expect(within(dialog).getByLabelText(/^Instructions/i)).toHaveValue(
+    "Carry me",
+  );
+
+  // Host Harness loads Netcup's Claude runtime.
+  await waitFor(() =>
+    expect(hostsClient.status).toHaveBeenCalledWith(
+      { host: hostA.host, generation: hostA.generation },
+      expect.any(AbortSignal),
+    ),
+  );
+  await user.click(within(dialog).getByRole("combobox", { name: "Harness" }));
+  await user.click(await screen.findByRole("option", { name: "Claude" }));
+
+  // Switch Run on to Backup before freeze -> clears stale Claude runtime.
+  await user.click(within(dialog).getByRole("combobox", { name: "Run on" }));
+  await user.click(await screen.findByRole("option", { name: "Backup" }));
+  await waitFor(() =>
+    expect(hostsClient.status).toHaveBeenCalledWith(
+      { host: hostB.host, generation: hostB.generation },
+      expect.any(AbortSignal),
+    ),
+  );
+  await user.click(within(dialog).getByRole("combobox", { name: "Run on" }));
+  await user.click(await screen.findByRole("option", { name: "Netcup" }));
+  await user.click(within(dialog).getByRole("combobox", { name: "Harness" }));
+  await user.click(await screen.findByRole("option", { name: "Claude" }));
+
+  // Prepare -> RemoteAgentIntroduction -> agents.create -> transitions in-place to frozen setup.
+  await user.click(createButton());
+  await user.click(await screen.findByRole("button", { name: "Let’s go" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("dialog", { name: "Finish Netcup Agent" }),
+    ).toBeInTheDocument(),
+  );
+  expect(onCreated).not.toHaveBeenCalled();
+
+  const finishDialog = screen.getByRole("dialog", {
+    name: "Finish Netcup Agent",
+  });
+  expect(within(finishDialog).getByLabelText("Name")).toBeDisabled();
+  expect(
+    within(finishDialog).getByRole("combobox", { name: "Run on" }),
+  ).toBeDisabled();
+  expect(
+    within(finishDialog).getByRole("combobox", { name: "Harness" }),
+  ).toBeDisabled();
+  expect(within(finishDialog).getByLabelText(/^Instructions/i)).toBeDisabled();
+
+  // Select observed model (no Custom model item) and conditional Thinking level.
+  await user.click(
+    within(finishDialog).getByRole("button", { name: /Model:/i }),
+  );
+  expect(
+    screen.queryByRole("menuitem", { name: "Custom model" }),
+  ).not.toBeInTheDocument();
+  (await screen.findByRole("menuitem", { name: "Claude" })).focus();
+  await user.keyboard("{ArrowRight}");
+  await user.click(
+    await screen.findByRole("menuitemradio", { name: "Claude Sonnet" }),
+  );
+  await user.click(
+    within(finishDialog).getByRole("combobox", { name: "Thinking" }),
+  );
+  await user.click(await screen.findByRole("option", { name: "High" }));
+
+  await user.click(
+    within(finishDialog).getByRole("button", { name: "Finish setup" }),
+  );
+  expect(agents.finish).toHaveBeenCalledWith(pubkey, {
+    config: expect.objectContaining({
+      modelId: "claude-sonnet",
+      effort: "high",
+    }),
+  });
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(finishedAgent));
+});
+
+it("completes reopened unfinished hosted agent when setupState returns applied", async () => {
+  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
+    "./registeredHostType"
+  );
+  const pubkey = "88".repeat(32);
+  const owner = "ab".repeat(32);
+  const setupState = vi.fn(async () => ({
+    status: "applied" as const,
+    pubkey,
+    unit: "buzz-agent@1",
+    revision: 2,
+  }));
+  const hostedType = {
+    ...createRegisteredHostType({
+      recover: vi.fn(),
+      status: vi.fn(),
+      provision: vi.fn(),
+      activate: vi.fn(),
+      setupState,
+      profile: vi.fn(),
+      remove: vi.fn(),
+    }),
+    key: REGISTERED_HOST_TYPE_KEY,
+    pluginId: "buzz.agents",
+    revision: "1",
+  } as unknown as RegisteredAgentType;
+  const unfinished: Agent = {
+    key: pubkey,
+    pubkey,
+    name: "Applied Host",
+    type: REGISTERED_HOST_TYPE_KEY,
+    owner,
+    place: "hosted",
+    relay: "wss://example.org",
+    unfinished: true,
+    attention: {},
+    skipped: {},
+    timers: {},
+    attentionEnabled: false,
+    config: {
+      host: "cd".repeat(32),
+      generation: "ef".repeat(32),
+      hostLabel: "Netcup",
+      runtimeId: "acp/claude",
+      harnessId: "claude",
+      instructions: "",
+      modelId: "",
+      effort: "",
+      pubkey,
+      frozen: true,
+    },
+  };
+  const { unfinished: _d, ...done } = unfinished;
+  const finished: Agent = done;
+  const agents = {
+    create: vi.fn(),
+    finish: vi.fn(async () => finished),
+  } as unknown as Agents & { finish: ReturnType<typeof vi.fn> };
+  const onCreated = vi.fn();
+  render(
+    <AgentCreateDialog
+      agents={agents}
+      types={[notes as RegisteredAgentType, hostedType]}
+      unfinished={unfinished}
+      onClose={vi.fn()}
+      onCreated={onCreated}
+    />,
+  );
+
+  await waitFor(() =>
+    expect(setupState).toHaveBeenCalledWith(
+      { pubkey, refresh: false },
+      expect.any(AbortSignal),
+    ),
+  );
+  const btn = await screen.findByRole("button", { name: "Finish setup" });
+  await waitFor(() => expect(btn).toBeEnabled());
+  await userEvent.setup().click(btn);
+  expect(agents.finish).toHaveBeenCalledWith(pubkey, {
+    config: expect.objectContaining({ applied: true }),
+  });
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(finished));
+});
+
+it("clears harnessId when switching to a runtime with harnessId: null and hides Thinking", async () => {
+  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
+    "./registeredHostType"
+  );
+  const owner = "ab".repeat(32);
+  const hostA = {
+    owner,
+    community: "https://example.org",
+    host: "cd".repeat(32),
+    generation: "ef".repeat(32),
+    label: "Netcup",
+    registration: "registered" as const,
+    availability: "unavailable" as const,
+  };
+  const hostsClient = {
+    recover: vi.fn(),
+    status: vi.fn(async () => ({
+      availability: "current" as const,
+      catalogRevision: "aa".repeat(32),
+      expiresAt: Math.floor(Date.now() / 1000) + 120,
+      runtimes: [
+        {
+          runtimeId: "acp/rt1",
+          harnessId: "claude",
+          availability: "available" as const,
+          version: "1.0.0",
+          configSupported: true,
+        },
+        {
+          runtimeId: "acp/rt2",
+          harnessId: null,
+          availability: "available" as const,
+          version: "1.0.0",
+          configSupported: true,
+        },
+      ],
+    })),
+    provision: vi.fn(),
+    activate: vi.fn(),
+    setupState: vi.fn(),
+    profile: vi.fn(),
+    remove: vi.fn(),
+  };
+  const hostedType = {
+    ...createRegisteredHostType(hostsClient),
+    key: REGISTERED_HOST_TYPE_KEY,
+    pluginId: "buzz.agents",
+    revision: "1",
+  } as unknown as RegisteredAgentType;
+  const agents = {
+    create: vi.fn(),
+    finish: vi.fn(),
+  } as unknown as Agents;
+  const onCreate = vi.fn(async (_input: NewAgent) => ({
+    key: "77".repeat(32),
+    pubkey: "77".repeat(32),
+    name: "Custom Agent",
+    type: REGISTERED_HOST_TYPE_KEY,
+    owner,
+    place: "hosted" as const,
+    relay: "https://example.org",
+    attention: {},
+    skipped: {},
+    timers: {},
+    attentionEnabled: false,
+    config: undefined,
+  }));
+  const user = userEvent.setup();
+  const { unmount } = render(
+    <AgentCreateDialog
+      agents={agents}
+      types={[notes as RegisteredAgentType, hostedType]}
+      loadRegisteredHosts={async () => [hostA]}
+      onCreate={onCreate}
+      onClose={vi.fn()}
+      onCreated={vi.fn()}
+    />,
+  );
+
+  await user.type(screen.getByPlaceholderText("Name"), "Custom Agent");
+  await user.click(await screen.findByRole("combobox", { name: "Run on" }));
+  await user.click(await screen.findByRole("option", { name: "Netcup" }));
+  const harness = await screen.findByRole("combobox", { name: "Harness" });
+  await waitFor(() => expect(harness).toBeEnabled());
+  await user.click(harness);
+  await user.click(await screen.findByRole("option", { name: "Claude" }));
+  await user.click(harness);
+  await user.click(await screen.findByRole("option", { name: "Rt2" }));
+
+  await user.click(createButton());
+  await user.click(await screen.findByRole("button", { name: "Let’s go" }));
+  await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+  const submitted = onCreate.mock.calls[0]?.[0]?.config as Record<
+    string,
+    unknown
+  >;
+  expect(submitted.runtimeId).toBe("acp/rt2");
+  expect("harnessId" in submitted).toBe(false);
+  unmount();
+
+  const frozenNullHarness: Agent = {
+    key: "77".repeat(32),
+    pubkey: "77".repeat(32),
+    name: "Custom Agent",
+    type: REGISTERED_HOST_TYPE_KEY,
+    owner,
+    place: "hosted",
+    relay: "https://example.org",
+    unfinished: true,
+    attention: {},
+    skipped: {},
+    timers: {},
+    attentionEnabled: false,
+    config: {
+      ...submitted,
+      pubkey: "77".repeat(32),
+      frozen: true,
+      observation: {
+        expiresAt: Math.floor(Date.now() / 1000) + 120,
+        readiness: "logged-in",
+        availability: "available",
+        modelsState: "available",
+        unavailableReason: null,
+        models: [{ id: "m1", name: "Model 1", description: null }],
+      },
+    },
+  };
+  render(
+    <AgentCreateDialog
+      agents={agents}
+      types={[notes as RegisteredAgentType, hostedType]}
+      unfinished={frozenNullHarness}
+      onClose={vi.fn()}
+      onCreated={vi.fn()}
+    />,
+  );
+  expect(
+    await screen.findByRole("button", { name: /Model:/i }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("combobox", { name: "Thinking" }),
+  ).not.toBeInTheDocument();
+});
