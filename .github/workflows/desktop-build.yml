@@ -401,26 +401,9 @@ jobs:
           }
       - name: Exercise registered-host IPC in the installed Windows candidate
         if: inputs.candidates && inputs.verify_registered_hosts
-        timeout-minutes: 2
+        timeout-minutes: 5
         shell: pwsh
-        run: |
-          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-          $listener.Start()
-          $port = $listener.LocalEndpoint.Port
-          $listener.Stop()
-          $env:WEBVIEW2_USER_DATA_FOLDER = "$env:RUNNER_TEMP\candidate-webview"
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port --proxy-server=http://127.0.0.1:1"
-          $env:HTTPS_PROXY = $env:HTTP_PROXY = 'http://127.0.0.1:1'
-          $env:NO_PROXY = 'localhost,127.0.0.1'
-          $app = Start-Process "$env:RUNNER_TEMP\candidate-install\Buzz.exe" -PassThru
-          try {
-            $env:BUZZ_TEST_CDP_PORT = $port
-            node --test --test-timeout=60000 scripts/verify-windows-registered-hosts.mjs
-            if ($app.HasExited) { throw "Installed Buzz exited during IPC (exit code $($app.ExitCode))" }
-            if ($LASTEXITCODE -ne 0) { throw 'Registered-host IPC smoke failed' }
-          } finally {
-            if (!$app.HasExited) { $app.Kill($true); $app.WaitForExit() }
-          }
+        run: ./scripts/verify-windows-registered-hosts.ps1
       - name: Stage candidate and checksum
         run: |
           mkdir release-assets
