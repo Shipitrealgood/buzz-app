@@ -232,9 +232,9 @@ jobs:
             Invoke-CargoGate ($case.Split('::')[-1]) @('test', '-p', 'Buzz', '--lib', '--locked', $case, '--', '--exact', '--nocapture', '--test-threads=1') $case
           }
           # Run the shared owner's existing negative ACL probe, from the locked dependency itself.
-          $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json
+          $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json -AsHashtable
           if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata failed' }
-          $owner = @($metadata.packages | Where-Object name -eq 'buzz-paired-owner')
+          $owner = @($metadata.packages | Where-Object { $_['name'] -eq 'buzz-paired-owner' })
           if ($owner.Count -ne 1 -or $owner[0].source -notlike '*#78232d95173b876babcee0f51b18f7c2a17dac0d') { throw 'Unexpected owner source' }
           $probe = Join-Path (Split-Path $owner[0].manifest_path) 'windows/test-journal-acl.ps1'
           $owner[0].source | Add-Content "$evidence/source.txt"
