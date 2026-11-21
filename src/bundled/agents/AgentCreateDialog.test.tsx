@@ -2110,6 +2110,22 @@ async function hostedForm(localTypes?: readonly RegisteredAgentType[]) {
   return form;
 }
 
+it("labels placement with the selected harness destination and the actual return choice from a host", async () => {
+  const { select } = await openHostedForm([remoteEcho, notes]);
+  const placementControl = () =>
+    screen.getByRole("combobox", { name: "Run on" });
+  expect(placementControl()).toHaveTextContent("Builderlab");
+  await select("Harness", "Notes");
+  expect(placementControl()).toHaveTextContent("This computer");
+  await select("Run on", "Example host");
+  expect(placementControl()).toHaveTextContent("Example host");
+  await select("Run on", "Builderlab");
+  expect(placementControl()).toHaveTextContent("Builderlab");
+  expect(screen.getByRole("combobox", { name: "Harness" })).toHaveTextContent(
+    "Builderlab",
+  );
+});
+
 it("keeps This computer usable while checking for hosts and after a failed read", async () => {
   let reject!: (error: Error) => void;
   const lookup = vi.fn<LoadRegisteredHosts>(
@@ -2161,9 +2177,13 @@ it.each([
     );
     const runOn = screen.getByRole("combobox", { name: "Run on" });
     await waitFor(() => expect(runOn).toHaveAccessibleDescription(hint));
-    await user.click(runOn);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
+    runOn.focus();
+    await user.keyboard("{ArrowDown}");
     expect(
-      screen.getAllByRole("option").map((option) => option.textContent),
+      (await screen.findAllByRole("option")).map(
+        (option) => option.textContent,
+      ),
     ).toEqual(["This computer"]);
   },
 );

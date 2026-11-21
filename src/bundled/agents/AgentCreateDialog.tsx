@@ -665,8 +665,14 @@ export function AgentCreateDialog({
   };
   const saveSettings: AgentViewProps["save"] = (config) =>
     create(false, { config });
+  const defaultPlacementType = runOn === "local" ? type : defaultLocalType;
   const runOnOptions = [
-    { value: "local", label: "This computer" },
+    {
+      value: "local",
+      label: defaultPlacementType?.remote
+        ? defaultPlacementType.title
+        : "This computer",
+    },
     ...hosts.map((h) => ({
       value: `${h.host}:${h.generation}`,
       label: h.label?.trim() || `Host ${h.host.slice(0, 8)}`,
