@@ -1,0 +1,104 @@
+name: Windows candidate startup control
+on:
+  push:
+    branches: [feat/2722-one-host-provider]
+    paths: [.github/workflows/windows-candidate-startup.yml]
+
+permissions:
+  actions: read
+
+jobs:
+  startup:
+    if: github.event.repository.fork
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 14691710523
+          run-id: 44860949534
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: installer
+      - name: Check the retained installer's signed-out startup
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $installer = Get-Item installer/Buzz_1.0.7-preview.1_x64_unsigned.exe
+          if ((Get-Content -Raw installer/SOURCE_COMMIT).Trim() -ne 'e3c74c424ef067a2e27a30a75eb7c574ee9936fd' -or
+              (Get-FileHash $installer).Hash -ne '339ed55625e48b7e0a547349caf9a0b9ebed38f46f6aef0b9ccf52472fd6fb5c') { throw 'Unexpected installer' }
+          $dest = "$env:RUNNER_TEMP\candidate-install"
+          $setup = Start-Process $installer.FullName -ArgumentList "/S /D=$dest" -PassThru -Wait
+          if ($setup.ExitCode -ne 0 -or (Get-FileHash "$dest\Buzz.exe").Hash -ne '1266f0abf449a235114af8a17df5031b31042f58cff007e6fb5885e67d0896bb') { throw 'Unexpected installed executable' }
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $listener.Start()
+          $port = $listener.LocalEndpoint.Port
+          $listener.Stop()
+          $env:WEBVIEW2_USER_DATA_FOLDER = "$env:RUNNER_TEMP\candidate-webview"
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port --proxy-server=http://127.0.0.1:1"
+          $env:HTTPS_PROXY = $env:HTTP_PROXY = 'http://127.0.0.1:1'
+          $env:NO_PROXY = 'localhost,127.0.0.1'
+          $log = "$env:RUNNER_TEMP\buzz-startup.stderr"
+          $app = Start-Process "$dest\Buzz.exe" -PassThru -RedirectStandardError $log
+          try {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            do {
+              $app.Refresh()
+              if ($app.HasExited) { throw "Buzz exited ($($app.ExitCode))" }
+              $targets = @()
+              try {
+                $targets = @(Invoke-RestMethod "http://127.0.0.1:$port/json/list" -NoProxy -TimeoutSec 2 | Write-Output)
+                $http = 'ok'
+              } catch { $http = $_.Exception.GetType().Name }
+              $pages = @($targets | Where-Object type -eq 'page')
+              $buzz = @($pages | Where-Object { $_.url -match '^https?://tauri\.localhost/(index\.html)?([?#]|$)' })
+              if ($buzz.Count -eq 1) { break }
+              Start-Sleep -Milliseconds 500
+            } while ($watch.Elapsed.TotalSeconds -lt 30)
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)")
+            $views = @($children | Where-Object Name -eq 'msedgewebview2.exe')
+            $configured = @($views | Where-Object { $_.CommandLine -like "*--remote-debugging-port=$port*" })
+            $blank = @($pages | Where-Object url -eq 'about:blank')
+            $appOrigin = @($pages | Where-Object { $_.url -match '^https?://tauri\.localhost(/|$)' })
+            $title = if ($app.MainWindowTitle -eq 'Buzz') { 'buzz' } elseif ($app.MainWindowTitle) { 'other' } else { 'none' }
+            Write-Host "window=$title responding=$($app.Responding) children=$($children.Count) webview=$($views.Count) configured=$($configured.Count) profile=$(Test-Path $env:WEBVIEW2_USER_DATA_FOLDER) http=$http targets=$($targets.Count) pages=$($pages.Count) blank=$($blank.Count) appOrigin=$($appOrigin.Count) appPage=$($buzz.Count)"
+            if ($buzz.Count -ne 1) {
+              $messages = [string](Get-Content $log -Raw -ErrorAction SilentlyContinue)
+              if ($app.MainWindowHandle -ne 0) {
+                try {
+                  Add-Type -AssemblyName UIAutomationClient
+                  $window = [Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
+                  if ($window.Current.ClassName -eq '#32770') {
+                    Write-Host 'The process opened a native modal dialog.'
+                    $controls = $window.FindAll([Windows.Automation.TreeScope]::Children, [Windows.Automation.Condition]::TrueCondition)
+                    foreach ($control in $controls) { $messages += " " + $control.Current.Name }
+                  }
+                } catch { Write-Host 'Window diagnostics unavailable.' }
+              }
+              foreach ($pattern in @('instance lock','sign.out','federated','WebView2','DLL','panicked','denied','not found','os error [0-9]+','0x[0-9a-f]{8}')) {
+                $match = [regex]::Match($messages, $pattern, 'IgnoreCase')
+                if ($match.Success) { Write-Host "Startup diagnostic matched $($match.Value)" }
+              }
+              throw 'The retained installer did not expose its packaged main page'
+            }
+            $env:BUZZ_CONTROL_WS = $buzz[0].webSocketDebuggerUrl
+            @'
+          const socket = new WebSocket(process.env.BUZZ_CONTROL_WS);
+          const timeout = setTimeout(() => process.exit(1), 8000);
+          socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: {
+            expression: "(async () => window.__TAURI_INTERNALS__?.metadata.currentWindow.label === 'main' && (await window.__TAURI_INTERNALS__.invoke('identity_restore')) === null)()",
+            awaitPromise: true, returnByValue: true,
+          }}));
+          socket.onmessage = ({ data }) => {
+            const response = JSON.parse(data);
+            if (response.id !== 1) return;
+            clearTimeout(timeout);
+            socket.close();
+            process.exitCode = response.result?.result?.value === true ? 0 : 1;
+          };
+          '@ | node
+            if ($LASTEXITCODE -ne 0 -or $app.HasExited) { throw 'Signed-out identity control failed' }
+            Write-Host 'The installed main WebView returned a signed-out identity and Buzz stayed alive.'
+          } finally {
+            if (!$app.HasExited) { $app.Kill($true); $app.WaitForExit() }
+          }
