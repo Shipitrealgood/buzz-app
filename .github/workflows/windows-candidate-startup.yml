@@ -34,13 +34,53 @@ jobs:
           $listener.Start()
           $port = $listener.LocalEndpoint.Port
           $listener.Stop()
-          $env:WEBVIEW2_USER_DATA_FOLDER = "$env:RUNNER_TEMP\candidate-webview"
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port --proxy-server=http://127.0.0.1:1"
-          $env:HTTPS_PROXY = $env:HTTP_PROXY = 'http://127.0.0.1:1'
-          $env:NO_PROXY = 'localhost,127.0.0.1'
-          $log = "$env:RUNNER_TEMP\buzz-startup.stderr"
-          $app = Start-Process "$dest\Buzz.exe" -PassThru -RedirectStandardError $log
+          # WebView2 150+ ignores per-user debugging flags when its host is elevated.
+          # Use the ordinary user's environment, key store and WebView data folder.
+          $name = 'buzzsmoke' + [guid]::NewGuid().ToString('N').Substring(0,8)
+          $password = ConvertTo-SecureString ('T9!' + [guid]::NewGuid().ToString('N')) -AsPlainText -Force
+          $app = $launcher = $account = $null
           try {
+            $account = New-LocalUser -Name $name -Password $password -Description 'Disposable Buzz candidate test'
+            $sid = $account.SID.Value
+            icacls $env:GITHUB_WORKSPACE /deny "*${sid}:(OI)(CI)RX" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to isolate the runner workspace' }
+            icacls $dest /grant "*${sid}:(OI)(CI)RX" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to grant read-only access to the installed app' }
+            @"
+          @echo off
+          whoami /groups | findstr /L /C:"S-1-16-8192" >nul || exit /b 11
+          if defined ACTIONS_RUNTIME_TOKEN exit /b 12
+          if defined GITHUB_TOKEN exit /b 12
+          if defined GITHUB_WORKSPACE exit /b 12
+          type "$env:GITHUB_WORKSPACE\installer\SOURCE_COMMIT" >nul 2>&1 && exit /b 13
+          set "WEBVIEW2_USER_DATA_FOLDER=%LOCALAPPDATA%\BuzzCandidateWebView"
+          set "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port --proxy-server=http://127.0.0.1:1"
+          set "HTTPS_PROXY=http://127.0.0.1:1"
+          set "HTTP_PROXY=http://127.0.0.1:1"
+          set "NO_PROXY=localhost,127.0.0.1"
+          start "" /wait "%~dp0Buzz.exe"
+          "@ | Set-Content "$dest\startup-control.cmd" -Encoding ascii
+            # Leave the environment block unset so Windows builds it from the specified user's profile.
+            $start = [Diagnostics.ProcessStartInfo]::new($env:ComSpec, '/d /c startup-control.cmd')
+            $start.UseShellExecute = $false
+            $start.WorkingDirectory = $dest
+            $start.UserName = $account.Name
+            $start.Domain = $env:COMPUTERNAME
+            $start.Password = $password
+            $start.LoadUserProfile = $true
+            $launcher = [Diagnostics.Process]::Start($start)
+            $deadline = [Diagnostics.Stopwatch]::StartNew()
+            do {
+              if ($launcher.HasExited) { throw "Standard-user launch failed ($($launcher.ExitCode))" }
+              $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($launcher.Id) AND Name='Buzz.exe'"
+              if ($child) { break }
+              Start-Sleep -Milliseconds 250
+            } while ($deadline.Elapsed.TotalSeconds -lt 15)
+            if (!$child -or $child.ExecutablePath -ne "$dest\Buzz.exe") { throw 'Installed process missing' }
+            $owner = Invoke-CimMethod -InputObject $child -MethodName GetOwnerSid
+            if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { throw 'Unexpected Buzz process owner' }
+            $app = Get-Process -Id $child.ProcessId
+            Write-Host 'Verified the pinned installed app under the isolated medium-integrity account.'
             $watch = [Diagnostics.Stopwatch]::StartNew()
             do {
               $app.Refresh()
@@ -61,9 +101,10 @@ jobs:
             $blank = @($pages | Where-Object url -eq 'about:blank')
             $appOrigin = @($pages | Where-Object { $_.url -match '^https?://tauri\.localhost(/|$)' })
             $title = if ($app.MainWindowTitle -eq 'Buzz') { 'buzz' } elseif ($app.MainWindowTitle) { 'other' } else { 'none' }
-            Write-Host "window=$title responding=$($app.Responding) children=$($children.Count) webview=$($views.Count) configured=$($configured.Count) profile=$(Test-Path $env:WEBVIEW2_USER_DATA_FOLDER) http=$http targets=$($targets.Count) pages=$($pages.Count) blank=$($blank.Count) appOrigin=$($appOrigin.Count) appPage=$($buzz.Count)"
+            $runtimeVersion = if ($views.Count -eq 1) { (Get-Item $views[0].ExecutablePath).VersionInfo.FileVersion } else { 'unknown' }
+            Write-Host "runtime=$runtimeVersion window=$title responding=$($app.Responding) children=$($children.Count) webview=$($views.Count) configured=$($configured.Count) http=$http targets=$($targets.Count) pages=$($pages.Count) blank=$($blank.Count) appOrigin=$($appOrigin.Count) appPage=$($buzz.Count)"
             if ($buzz.Count -ne 1) {
-              $messages = [string](Get-Content $log -Raw -ErrorAction SilentlyContinue)
+              $messages = ''
               if ($app.MainWindowHandle -ne 0) {
                 try {
                   Add-Type -AssemblyName UIAutomationClient
@@ -100,5 +141,11 @@ jobs:
             if ($LASTEXITCODE -ne 0 -or $app.HasExited) { throw 'Signed-out identity control failed' }
             Write-Host 'The installed main WebView returned a signed-out identity and Buzz stayed alive.'
           } finally {
-            if (!$app.HasExited) { $app.Kill($true); $app.WaitForExit() }
+            if ($app -and !$app.HasExited) { $app.Kill($true); $app.WaitForExit() }
+            if ($launcher -and !$launcher.HasExited) { $launcher.Kill($true); $launcher.WaitForExit() }
+            if ($account) {
+              icacls $env:GITHUB_WORKSPACE /remove:d "*$sid" | Out-Null
+              Remove-LocalUser -SID $account.SID
+            }
+            $password.Dispose()
           }
