@@ -153,12 +153,16 @@ fn jwt(viewer: &str, relay: &str, minted: u64, expires: u64) -> String {
 }
 
 /// The loopback certificate every native transport trusts in tests, and only
-/// in tests: `127.0.0.1`, self-signed, generated once per test process.
+/// in tests: self-signed for loopback, generated once per test process.
 fn certificate() -> &'static rcgen::CertifiedKey<rcgen::KeyPair> {
     static CERTIFICATE: std::sync::OnceLock<rcgen::CertifiedKey<rcgen::KeyPair>> =
         std::sync::OnceLock::new();
-    CERTIFICATE
-        .get_or_init(|| rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap())
+    CERTIFICATE.get_or_init(|| {
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()]).unwrap()
+    })
+}
+pub(crate) fn trusted_root_der() -> rustls::pki_types::CertificateDer<'static> {
+    certificate().cert.der().clone()
 }
 pub(crate) fn trusted_root() -> reqwest::Certificate {
     reqwest::Certificate::from_der(certificate().cert.der()).unwrap()
@@ -191,7 +195,7 @@ pub(crate) fn trusted_connector() -> tokio_tungstenite::Connector {
 pub(crate) struct Community {
     pub(crate) fi: FederatedIdentity,
     pub(crate) host: crate::identity::IdentityHost,
-    /// `https://127.0.0.1:<port>/`.
+    /// The fixture's loopback HTTPS origin.
     pub(crate) origin: url::Url,
     required: bool,
     token: String,
@@ -199,8 +203,11 @@ pub(crate) struct Community {
     acceptor: tokio_rustls::TlsAcceptor,
 }
 pub(crate) async fn community(required: bool) -> Community {
+    community_at(required, "127.0.0.1").await
+}
+pub(crate) async fn community_at(required: bool, hostname: &str) -> Community {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let authority = listener.local_addr().unwrap().to_string();
+    let authority = format!("{hostname}:{}", listener.local_addr().unwrap().port());
     let host = crate::identity::IdentityHost::fixture();
     let viewer = host.viewer().await.unwrap();
     let relay = format!("wss://{authority}");

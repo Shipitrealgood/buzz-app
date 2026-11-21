@@ -27,9 +27,9 @@ tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
 # Registry/journal source matches the audited owner-library revision.
-buzz-paired-owner = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "0d03b28a3c537409f8a86a30cd1389096ddeb13d" }
-buzz-ws-client = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "0d03b28a3c537409f8a86a30cd1389096ddeb13d" }
-buzz-core = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "0d03b28a3c537409f8a86a30cd1389096ddeb13d" }
+buzz-paired-owner = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "0c590b4dddcba18fe981764b5e3f6afc316a2f62" }
+buzz-ws-client = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "0c590b4dddcba18fe981764b5e3f6afc316a2f62" }
+buzz-core = { git = "https://github.com/Shipitrealgood/buzz.git", rev = "0c590b4dddcba18fe981764b5e3f6afc316a2f62" }
 nostr_registry = { package = "nostr", version = "0.44", features = ["nip44", "nip98"] }
 anyhow = "1"
 buzz-mesh-compute = { path = "../src/bundled/mesh-compute/compute" }

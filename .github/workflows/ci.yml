@@ -290,7 +290,7 @@ jobs:
           $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json -AsHashtable
           if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata failed' }
           $owner = @($metadata.packages | Where-Object { $_['name'] -eq 'buzz-paired-owner' })
-          $ownerRevision = '0d03b28a3c537409f8a86a30cd1389096ddeb13d'
+          $ownerRevision = '0c590b4dddcba18fe981764b5e3f6afc316a2f62'
           $expectedSource = "git+https://github.com/Shipitrealgood/buzz.git?rev=$ownerRevision#$ownerRevision"
           if ($owner.Count -ne 1 -or $owner[0].source -cne $expectedSource) { throw 'Unexpected owner source' }
           $probe = Join-Path (Split-Path $owner[0].manifest_path) 'windows/test-journal-acl.ps1'

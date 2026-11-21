@@ -3,13 +3,38 @@ use super::{origin, relay_info, IdentityHost};
 use crate::federated_identity::{assertion::HEADER, FederatedIdentity};
 use anyhow::{anyhow, ensure, Result};
 use buzz_paired_owner::{registry::Registry, Device, HostView};
-use buzz_ws_client::{HeaderMap, NostrWsConnection};
+use buzz_ws_client::{Connector, HeaderMap, NostrWsConnection};
 use nostr_registry::{Keys, SecretKey};
 use serde::Serialize;
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 use tauri::Manager;
 
 const UNAVAILABLE: &str = "Registered host recovery is unavailable";
+
+async fn ws_conn(url: &str, headers: HeaderMap) -> Result<NostrWsConnection> {
+    // The app enables both rustls providers. Choose one for these sockets
+    // and retain the native and WebPKI roots enabled on the shared WS client.
+    let mut roots =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    #[cfg(test)]
+    roots.add(crate::federated_identity::testing::trusted_root_der())?;
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(tokio::time::timeout(
+        Duration::from_secs(10),
+        NostrWsConnection::connect_with_options(
+            url,
+            headers,
+            Some(Connector::Rustls(Arc::new(tls))),
+        ),
+    )
+    .await??)
+}
 
 /// Only public registration evidence crosses IPC. No runtime catalog, key,
 /// provisioning request or local-runner record is exposed by this checkpoint.
@@ -148,11 +173,7 @@ impl<'a> Session<'a> {
                 headers.insert(HEADER, header.parse()?);
             }
             let socket_url = self.community.replacen("https://", "wss://", 1);
-            let mut socket = tokio::time::timeout(
-                Duration::from_secs(10),
-                NostrWsConnection::connect_with_headers(&socket_url, headers),
-            )
-            .await??;
+            let mut socket = ws_conn(&socket_url, headers).await?;
             self.authenticate(&mut socket).await?;
             let mut registry = Registry::from_authenticated(
                 &self.community,

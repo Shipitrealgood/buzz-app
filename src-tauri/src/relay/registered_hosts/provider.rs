@@ -1,4 +1,4 @@
-use super::{origin, relay_info, Journal, Session};
+use super::{origin, relay_info, ws_conn, Journal, Session};
 use crate::{
     federated_identity::{assertion::HEADER, FederatedIdentity},
     identity::IdentityHost,
@@ -18,7 +18,7 @@ use buzz_paired_owner::deployment::{
     ReservationConfig, ReservationState::*, ReserveAgent,
 };
 use buzz_paired_owner::{registry::Registry, Device};
-use buzz_ws_client::{HeaderMap, NostrWsConnection};
+use buzz_ws_client::HeaderMap;
 use nostr_registry::{EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -164,14 +164,6 @@ fn project_status(st: &HostStatus) -> HostCatalogView {
         expires_at: st.expires_at,
         runtimes,
     }
-}
-
-async fn ws_conn(u: &str, h: HeaderMap) -> Result<NostrWsConnection> {
-    Ok(tokio::time::timeout(
-        Duration::from_secs(10),
-        NostrWsConnection::connect_with_headers(u, h),
-    )
-    .await??)
 }
 
 async fn with_mgmt<T>(
