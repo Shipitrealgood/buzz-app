@@ -39,7 +39,11 @@ import type {
   AgentCreationRequest,
   AgentUpdateRequest,
 } from "../../features/agents/service";
-import type { RegisteredHost } from "../../features/agents/registered-hosts";
+import type {
+  LoadRegisteredHosts,
+  RegisteredHost,
+  RegisteredHostDirectory,
+} from "../../features/agents/registered-hosts";
 import {
   EMPTY_HOSTED_CONFIG,
   REGISTERED_HOST_TYPE_KEY,
@@ -238,9 +242,7 @@ export function AgentCreateDialog({
     onSave(input: NewAgent): Promise<void>;
   }>;
   registeredHostScope?: string;
-  loadRegisteredHosts?: (
-    signal: AbortSignal,
-  ) => Promise<readonly RegisteredHost[]>;
+  loadRegisteredHosts?: LoadRegisteredHosts;
 }) {
   const edited = update?.agent;
   const reviewingSettings = !!update?.request.settings;
@@ -318,9 +320,18 @@ export function AgentCreateDialog({
       : config;
   };
   const [config, setConfig] = useState(() => seed(type));
-  const [directory, setDirectory] = useState({
+  const [directory, setDirectory] = useState<{
+    scope: string | undefined;
+    status:
+      | RegisteredHostDirectory["registry"]
+      | "loading"
+      | "no-scope"
+      | "failed";
+    hosts: readonly RegisteredHost[];
+  }>({
     scope: registeredHostScope,
-    hosts: [] as readonly RegisteredHost[],
+    status: "loading",
+    hosts: [],
   });
   const { hosts } = directory;
   const [runOn, setRunOn] = useState("local");
@@ -332,10 +343,19 @@ export function AgentCreateDialog({
         if (!controller.signal.aborted)
           setDirectory({
             scope: registeredHostScope,
-            hosts: next.filter((h) => h.registration === "registered"),
+            status: next?.registry ?? "no-scope",
+            hosts:
+              next?.hosts.filter((h) => h.registration === "registered") ?? [],
           });
       },
-      () => {},
+      () => {
+        if (!controller.signal.aborted)
+          setDirectory({
+            scope: registeredHostScope,
+            status: "failed",
+            hosts: [],
+          });
+      },
     );
     return () => controller.abort();
   }, [
@@ -530,7 +550,7 @@ export function AgentCreateDialog({
   };
   // Switching relay generation invalidates only the registered-host placement.
   if (directory.scope !== registeredHostScope) {
-    setDirectory({ scope: registeredHostScope, hosts: [] });
+    setDirectory({ scope: registeredHostScope, status: "loading", hosts: [] });
     if (runOn !== "local") {
       const local = defaultLocalType;
       const carried = type?.carry?.(config);
@@ -652,12 +672,25 @@ export function AgentCreateDialog({
       label: h.label?.trim() || `Host ${h.host.slice(0, 8)}`,
     })),
   ];
-  const runOnControl = !update && registeredHostType && hosts.length > 0 && (
+  const directoryHint = {
+    loading: "Checking for registered hosts…",
+    available: hosts.length
+      ? undefined
+      : "No registered hosts in this community.",
+    unavailable:
+      "The host registry is unavailable. Reopen Create agent to check again.",
+    unsupported: "This community does not offer a host registry.",
+    "no-scope": "Sign in to a community to check for registered hosts.",
+    failed: "Couldn’t load registered hosts. Reopen Create agent to try again.",
+  }[directory.status];
+  const runOnControl = !update && registeredHostType && loadRegisteredHosts && (
     <PreferenceRow
       title="Run on"
-      trailing={
+      subtitle={directoryHint}
+      trailing={({ "aria-describedby": describedBy }) => (
         <Select
           label="Run on"
+          describedBy={describedBy}
           variant="compact"
           align="end"
           value={runOn}
@@ -665,7 +698,7 @@ export function AgentCreateDialog({
           groups={[{ label: "", options: runOnOptions }]}
           onValueChange={chooseRunOn}
         />
-      }
+      )}
     />
   );
   const localHarnessControl = (

@@ -69,7 +69,7 @@ import {
   useAgentSaveReports,
 } from "../../features/agents/AgentSaveButton";
 import { useAgents, useChannelChoices } from "../../features/agents/react";
-import type { RegisteredHost } from "../../features/agents/registered-hosts";
+import type { LoadRegisteredHosts } from "../../features/agents/registered-hosts";
 import type { OldTeam, PortableAgent } from "../../features/agents/native";
 import type {
   Agent,
@@ -198,9 +198,7 @@ export function AgentsPage({
   linkRenderers,
   loadRegisteredHosts,
 }: {
-  loadRegisteredHosts?: (
-    signal: AbortSignal,
-  ) => Promise<readonly RegisteredHost[]>;
+  loadRegisteredHosts?: LoadRegisteredHosts;
   agents: Agents;
   relay: RelayData;
   communities?: CommunityReader | undefined;

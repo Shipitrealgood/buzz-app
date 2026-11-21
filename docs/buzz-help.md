@@ -1360,7 +1360,7 @@ default Huddle voice.
   reads **Default** instead. Selecting a named
   model's thinking level in the family menu also pins that model.
   Do not assume someone can edit another person's agent.
-- On desktop, **Run on** in **Create agent** lists your registered hosts. Choose a host, an installed harness, and a model reported by that harness, then choose **Create agent**. If the model list expires while you are filling out the form, Create checks your selected model again.
+- On desktop, **Run on** in **Create agent** starts on **This computer** while Buzz checks for registered hosts in the current community. If the check fails, you can continue on this computer or reopen **Create agent** to try again. Choose a registered host, an installed harness, and a model reported by that harness, then choose **Create agent**. If the model list expires while you are filling out the form, Create checks your selected model again.
 - In the agent avatar picker, drag the avatar strip with a mouse or scroll it
   to browse more choices. Click an avatar to select it; keyboard users can Tab
   through the choices and press Enter or Space.

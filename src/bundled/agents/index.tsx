@@ -16,11 +16,9 @@ import { isTauri } from "@tauri-apps/api/core";
 import {
   nativeRegisteredHosts,
   type RegisteredHostScope,
+  type LoadRegisteredHosts,
 } from "../../features/agents/registered-hosts";
-import {
-  createRegisteredHostType,
-  type RegisteredHostsClient,
-} from "./registeredHostType";
+import { createRegisteredHostType } from "./registeredHostType";
 import type {} from "../../features/agents/external-connection";
 import { ExternalConnectionSettings } from "./ExternalConnectionSettings";
 import { externalMcpEnabled } from "../../features/agents/external-connection";
@@ -47,7 +45,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   ctx.effect(() => forgetMemoryListingsOnSelection(ctx.communityReader));
   const { relay, navigation: navigator } = ctx;
   const agents = developerMode ? withImportScenario(ctx.agents) : ctx.agents;
-  let hostsClient: RegisteredHostsClient | undefined;
+  let loadRegisteredHosts: LoadRegisteredHosts | undefined;
   if (isTauri()) {
     let lastGeneration: number | undefined;
     let lastScope: RegisteredHostScope | undefined;
@@ -68,7 +66,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
       lastScope = { owner, community };
       return lastScope;
     };
-    hostsClient = nativeRegisteredHosts(currentScope);
+    const hostsClient = nativeRegisteredHosts(currentScope);
+    loadRegisteredHosts = async (signal) =>
+      currentScope() ? hostsClient.recover(signal) : undefined;
     ctx.agents.register(createRegisteredHostType(hostsClient));
   }
   if (isTauri()) {
@@ -143,16 +143,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
         relay={relay}
         communities={ctx.communityReader}
         navigator={navigator}
-        {...(hostsClient
-          ? {
-              loadRegisteredHosts: (signal: AbortSignal) =>
-                hostsClient
-                  .recover(signal)
-                  .then((dir) =>
-                    dir.hosts.filter((h) => h.registration === "registered"),
-                  ),
-            }
-          : {})}
+        {...(loadRegisteredHosts ? { loadRegisteredHosts } : {})}
         {...(navigation ? { navigation } : {})}
       />
     ),

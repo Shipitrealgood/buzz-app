@@ -27,6 +27,11 @@ export type RegisteredHostDirectory = RegisteredHostScope &
     hosts: readonly RegisteredHost[];
   }>;
 
+/** Desktop Create reads the current directory once. No scope means no lookup. */
+export type LoadRegisteredHosts = (
+  signal: AbortSignal,
+) => Promise<RegisteredHostDirectory | undefined>;
+
 export type HostRuntimeAvailability =
   | "available"
   | "adapter_missing"

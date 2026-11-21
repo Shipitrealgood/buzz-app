@@ -41,6 +41,10 @@ import {
   emojiAvatarScale,
   uploadAvatar,
 } from "../../features/profiles/avatar-upload";
+import type {
+  LoadRegisteredHosts,
+  RegisteredHostDirectory,
+} from "../../features/agents/registered-hosts";
 import { CHECK_MS } from "../../features/agents/recommended";
 import { AgentCreateDialog } from "./AgentCreateDialog";
 import {
@@ -1998,21 +2002,35 @@ const hostModels = (
   },
 });
 
-async function hostedForm(
+const placement = {
+  owner: "ab".repeat(32),
+  community: "https://example.org",
+  host: "cd".repeat(32),
+  generation: "ef".repeat(32),
+  label: "Example host",
+  registration: "registered" as const,
+  availability: "unavailable" as const,
+};
+
+async function openHostedForm(
   localTypes: readonly RegisteredAgentType[] = [notes as RegisteredAgentType],
+  loadRegisteredHosts: LoadRegisteredHosts = async () => ({
+    ...placement,
+    registry: "available",
+    hosts: [
+      placement,
+      {
+        ...placement,
+        host: "12".repeat(32),
+        generation: "34".repeat(32),
+        label: "Backup host",
+      },
+    ],
+  }),
 ) {
   const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
     "./registeredHostType"
   );
-  const placement = {
-    owner: "ab".repeat(32),
-    community: "https://example.org",
-    host: "cd".repeat(32),
-    generation: "ef".repeat(32),
-    label: "Example host",
-    registration: "registered" as const,
-    availability: "unavailable" as const,
-  };
   const revision = "aa".repeat(32);
   const hosts = {
     recover: vi.fn(),
@@ -2060,15 +2078,7 @@ async function hostedForm(
       registeredHostScope={scope}
       agents={agents as unknown as Agents}
       types={[...localTypes, hosted]}
-      loadRegisteredHosts={async () => [
-        placement,
-        {
-          ...placement,
-          host: "12".repeat(32),
-          generation: "34".repeat(32),
-          label: "Backup host",
-        },
-      ]}
+      loadRegisteredHosts={loadRegisteredHosts}
       onClose={onClose}
       onCreated={vi.fn()}
     />
@@ -2080,8 +2090,6 @@ async function hostedForm(
     await user.click(await screen.findByRole("combobox", { name: label }));
     await user.click(await screen.findByRole("option", { name: option }));
   };
-  await user.type(screen.getByLabelText("Name"), "Sky");
-  await select("Run on", "Example host");
   return {
     hosts,
     agents,
@@ -2094,6 +2102,102 @@ async function hostedForm(
     reconnect,
   };
 }
+
+async function hostedForm(localTypes?: readonly RegisteredAgentType[]) {
+  const form = await openHostedForm(localTypes);
+  await form.user.type(screen.getByLabelText("Name"), "Sky");
+  await form.select("Run on", "Example host");
+  return form;
+}
+
+it("keeps This computer usable while checking for hosts and after a failed read", async () => {
+  let reject!: (error: Error) => void;
+  const lookup = vi.fn<LoadRegisteredHosts>(
+    () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+  );
+  const { user, agents } = await openHostedForm(undefined, lookup);
+  const runOn = screen.getByRole("combobox", { name: "Run on" });
+  try {
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(runOn).toHaveTextContent("This computer");
+    expect(runOn).toHaveAccessibleDescription("Checking for registered hosts…");
+    await user.type(screen.getByLabelText("Name"), "Sky");
+    expect(createButton()).toBeEnabled();
+  } finally {
+    await act(async () => reject(new Error("unavailable")));
+  }
+  expect(runOn).toHaveAccessibleDescription(
+    /couldn’t load.*reopen create agent/i,
+  );
+  await user.click(runOn);
+  expect(
+    screen.getAllByRole("option").map((option) => option.textContent),
+  ).toEqual(["This computer"]);
+  await user.keyboard("{Escape}");
+  await user.click(createButton());
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  expect(lookup).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["available", /no registered hosts/i],
+  ["unsupported", /does not offer a host registry/i],
+  ["unavailable", /registry is unavailable/i],
+  [undefined, /sign in to a community/i],
+] as const)(
+  "explains a directory with no usable hosts (%s)",
+  async (registry, hint) => {
+    const { user } = await openHostedForm(
+      undefined,
+      async () =>
+        registry && {
+          ...placement,
+          registry,
+          hosts: [{ ...placement, registration: "unpaired" }],
+        },
+    );
+    const runOn = screen.getByRole("combobox", { name: "Run on" });
+    await waitFor(() => expect(runOn).toHaveAccessibleDescription(hint));
+    await user.click(runOn);
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["This computer"]);
+  },
+);
+
+it("ignores late recovery from an old scope and offers a cached signed registration when the registry is unavailable", async () => {
+  let finish!: (dir: RegisteredHostDirectory) => void;
+  const lookup = vi
+    .fn<LoadRegisteredHosts>()
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValueOnce({
+      ...placement,
+      registry: "unavailable",
+      hosts: [placement],
+    });
+  const { reconnect, select } = await openHostedForm(undefined, lookup);
+  try {
+    reconnect();
+    expect(lookup.mock.calls[0]?.[0].aborted).toBe(true);
+    await screen.findByText(/registry is unavailable/i);
+  } finally {
+    await act(async () =>
+      finish({ ...placement, registry: "available", hosts: [] }),
+    );
+  }
+  await select("Run on", "Example host");
+  expect(screen.getByRole("combobox", { name: "Harness" })).toHaveTextContent(
+    "Choose a harness",
+  );
+});
 
 it("uses only the latest harness catalog and creates the selected host model in one click", async () => {
   const { hosts, agents, placement, revision, select, user } =
