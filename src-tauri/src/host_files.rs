@@ -388,6 +388,7 @@ impl Drop for ManagedLock {
 
 /// One verified fixed lock covers accounting through final eligibility/cleanup.
 fn managed_lock(root: &Path) -> Result<ManagedLock, String> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

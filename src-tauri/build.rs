@@ -144,6 +144,7 @@ fn main() {
             "relay_archive",
             "relay_agent_memories_read",
             "relay_agent_library",
+            "registered_host_recover",
             "relay_upload_begin",
             "relay_upload_chunk",
             "relay_upload",
@@ -322,7 +323,9 @@ fn configure_federated_identity() {
     println!("cargo:rerun-if-env-changed=BUZZ_DEV_VIEWER");
     let local = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
         .join("../.env.local");
-    println!("cargo:rerun-if-changed={}", local.display());
+    if local.exists() {
+        println!("cargo:rerun-if-changed={}", local.display());
+    }
     let servers = federated_identity_servers(&local, |key| std::env::var(key).ok());
     if !servers.is_empty() {
         println!(
