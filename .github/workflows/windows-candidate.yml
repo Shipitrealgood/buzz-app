@@ -1,0 +1,24 @@
+name: Windows installer candidate
+
+# A change to this request builds its exact commit on a fork, even before the
+# workflow is present on the fork's default branch for manual dispatch.
+on:
+  push:
+    branches: [feat/2722-one-host-provider]
+    paths: [.github/workflows/windows-candidate.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    if: github.event.repository.fork
+    uses: ./.github/workflows/desktop-build.yml
+    # Match the reusable workflow's signing and publishing permission ceiling.
+    # Its only eligible job here, Windows, runs with contents: read.
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      candidates: true
+      preview_version: 1.0.7-preview.${{ github.run_number }}

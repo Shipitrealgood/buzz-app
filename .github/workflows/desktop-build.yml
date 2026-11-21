@@ -308,7 +308,10 @@ jobs:
           done
 
   windows:
-    if: github.repository == 'block/buzz-app'
+    if: >-
+      github.repository == 'block/buzz-app' ||
+      (github.event_name == 'push' && github.event.repository.fork && inputs.candidates &&
+       github.workflow_ref == format('{0}/.github/workflows/windows-candidate.yml@{1}', github.repository, github.ref))
     name: Windows x64 installer (unsigned)
     runs-on: windows-2025
     timeout-minutes: 120

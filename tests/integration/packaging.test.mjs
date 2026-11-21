@@ -63,6 +63,7 @@ function selected(
   ref = "refs/heads/main",
   repository = "block/buzz-app",
   needs = { source: { result: "success" } },
+  context = {},
 ) {
   return new Function(
     "github",
@@ -71,8 +72,59 @@ function selected(
     "needs",
     "cancelled",
     `return (${job.if})`,
-  )({ ref, repository }, inputs, format, needs, () => false);
+  )({ ref, repository, ...context }, inputs, format, needs, () => false);
 }
+
+test("the fork's candidate request builds only the read-only Windows installer", () => {
+  const path = ".github/workflows/windows-candidate.yml";
+  const workflow = parse(read(path));
+  const branch = "feat/2722-one-host-provider";
+  assert.deepEqual(workflow.on, {
+    push: { branches: [branch], paths: [path] },
+  });
+  const { candidate } = workflow.jobs;
+  assert.equal(candidate.uses, "./.github/workflows/desktop-build.yml");
+  assert.equal(candidate.secrets, undefined);
+  assert.equal(candidate.with.candidates, true);
+  assert.match(
+    candidate.with.preview_version,
+    /^\d+\.\d+\.\d+-preview\.\$\{\{ github\.run_number \}\}$/,
+  );
+  const repository = "example-org/buzz-app";
+  const ref = `refs/heads/${branch}`;
+  const context = {
+    event: { repository: { fork: true } },
+    event_name: "push",
+    workflow_ref: `${repository}/${path}@${ref}`,
+  };
+  const runs = (job, inputs = candidate.with, overrides = {}) =>
+    selected(job, inputs, ref, repository, undefined, {
+      ...context,
+      ...overrides,
+    });
+  assert.equal(runs(candidate), true);
+  assert.equal(
+    runs(candidate, {}, { event: { repository: { fork: false } } }),
+    false,
+  );
+  const desktop = parse(read(".github/workflows/desktop-build.yml"));
+  const { build, windows, linux, updater_signatures } = desktop.jobs;
+  assert.deepEqual(windows.permissions ?? desktop.permissions, {
+    contents: "read",
+  });
+  assert.equal(runs(windows), true);
+  assert.equal(runs(windows, { candidates: false }), false);
+  assert.equal(
+    runs(windows, candidate.with, { workflow_ref: "another-workflow" }),
+    false,
+  );
+  assert.equal(
+    runs(windows, candidate.with, { event_name: "pull_request" }),
+    false,
+  );
+  for (const job of [build, linux, updater_signatures])
+    assert.equal(runs(job), false);
+});
 
 test("previews build main daily and after each stable release, with one version per run", () => {
   const caller = parse(read(".github/workflows/release.yml"));
