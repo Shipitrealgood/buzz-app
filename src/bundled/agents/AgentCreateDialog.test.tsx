@@ -2084,6 +2084,7 @@ async function openHostedForm(
     />
   );
   const view = render(form("initial"));
+  await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
   const reconnect = () => view.rerender(form("reconnected"));
   const user = userEvent.setup();
   const select = async (label: string, option: string) => {
@@ -2149,10 +2150,15 @@ it("keeps This computer usable while checking for hosts and after a failed read"
     /couldn’t load.*reopen create agent/i,
   );
   await user.click(runOn);
-  expect(
-    screen.getAllByRole("option").map((option) => option.textContent),
-  ).toEqual(["This computer"]);
+  const listbox = await screen.findByRole("listbox");
+  const local = await within(listbox).findByRole("option", {
+    name: "This computer",
+    selected: true,
+  });
+  expect(within(listbox).getAllByRole("option")).toEqual([local]);
+  await waitFor(() => expect(local).toHaveFocus());
   await user.keyboard("{Escape}");
+  await waitFor(() => expect(runOn).toHaveFocus());
   await user.click(createButton());
   expect(agents.create).toHaveBeenCalledTimes(1);
   expect(lookup).toHaveBeenCalledTimes(1);
@@ -2177,7 +2183,6 @@ it.each([
     );
     const runOn = screen.getByRole("combobox", { name: "Run on" });
     await waitFor(() => expect(runOn).toHaveAccessibleDescription(hint));
-    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
     runOn.focus();
     await user.keyboard("{ArrowDown}");
     expect(
