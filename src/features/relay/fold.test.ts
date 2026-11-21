@@ -935,6 +935,20 @@ describe("profiles", () => {
       nameIsFallback: true,
     });
   });
+
+  it("drops an ill-formed emoji avatar and keeps the rest of the profile", () => {
+    // Old Buzz's emoji template around a lone surrogate, which cannot be encoded.
+    const picture = `data:image/svg+xml,${encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="256" fill="#FFB84D"/><text x="50%" y="56%" dominant-baseline="middle" text-anchor="middle" font-size="258">',
+    )}\ud83d${encodeURIComponent("</text></svg>")}`;
+    const profiles = foldProfiles([
+      profile(alice, { name: "Alice", about: "Skates", picture }),
+    ]);
+    expect(profiles.get(alice.pubkey)).toEqual({
+      name: "Alice",
+      about: "Skates",
+    });
+  });
 });
 
 describe("discovery", () => {
@@ -1449,4 +1463,74 @@ it("applies an agent owner's edit only with ownership evidence for that author",
   expect(fold(undefined)).toBe("Whole answer");
   expect(fold(relay.pubkey)).toBe("Whole answer");
   expect(fold(bob.pubkey)).toBe("Spoken prefix");
+});
+
+it("honours a relayed-from claim only while the author owns the named agent", () => {
+  const relayed = (tags: string[][]) =>
+    message(alice, channel, "@Juno Notice (relayed)\n\nRebase on main", 10, [
+      ...tags,
+      ["p", carol.pubkey],
+    ]);
+  const fold = (event: ReturnType<typeof message>, owner?: string) =>
+    foldMessages(channel, relay.pubkey, [event], {
+      agentOwner: (pubkey: string) =>
+        pubkey === bob.pubkey ? owner : undefined,
+    })[0];
+  const claim = relayed([["relayed-from", bob.pubkey, "source-chat"]]);
+  expect(fold(claim, alice.pubkey)?.relayedFrom).toEqual({
+    agent: bob.pubkey,
+    channelId: "source-chat",
+    notice: "@Juno Notice (relayed)",
+    verified: true,
+  });
+  // Unverified or forged: the claim is kept so its profile loads, never honoured.
+  expect(fold(claim)?.relayedFrom?.verified).toBe(false);
+  expect(fold(claim, dave.pubkey)?.relayedFrom?.verified).toBe(false);
+  // The content keeps its notice for every consumer; only the row omits it.
+  expect(fold(claim, alice.pubkey)?.content).toContain("Notice");
+  expect(
+    fold(relayed([["relayed-from", bob.pubkey]]), alice.pubkey)?.relayedFrom,
+  ).toMatchObject({ agent: bob.pubkey, verified: true });
+  // A relay-signed message attributed to the owner was not signed by them.
+  const attributed = signed(relay, {
+    kind: 9,
+    content: "Notice\n\nText",
+    created_at: 10,
+    tags: [
+      ["h", channel],
+      ["actor", alice.pubkey],
+      ["relayed-from", bob.pubkey],
+    ],
+  });
+  const [row] = foldMessages(channel, relay.pubkey, [attributed], {
+    signingAuthority: relay.pubkey,
+    agentOwner: (pubkey: string) =>
+      pubkey === bob.pubkey ? alice.pubkey : undefined,
+  });
+  expect(row?.authorId).toBe(alice.pubkey);
+  expect(row?.relayedFrom?.verified).toBe(false);
+  for (const tags of [
+    [
+      ["relayed-from", bob.pubkey],
+      ["relayed-from", dave.pubkey],
+    ],
+    [["relayed-from", "not-a-key"]],
+    [["relayed-from", alice.pubkey]],
+  ])
+    expect(fold(relayed(tags), alice.pubkey)?.relayedFrom).toBeUndefined();
+});
+
+it("replaces a shared row when only its relayed claim's verification changes", () => {
+  const event = message(alice, channel, "Notice\n\nText", 10, [
+    ["relayed-from", bob.pubkey],
+  ]);
+  const fold = (owner?: string) =>
+    foldMessages(channel, relay.pubkey, [event], {
+      agentOwner: () => owner,
+    });
+  const before = fold();
+  const after = shareMessageRows(before, fold(alice.pubkey));
+  expect(after[0]).not.toBe(before[0]);
+  expect(after[0]?.relayedFrom?.verified).toBe(true);
+  expect(shareMessageRows(after, fold(alice.pubkey))[0]).toBe(after[0]);
 });

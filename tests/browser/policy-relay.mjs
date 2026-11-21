@@ -1,4 +1,5 @@
 import { expect } from "@playwright/test";
+import { isSidebarPreferencesBatch } from "../../src/features/relay/sidebar-preferences.ts";
 import { verifyEvent } from "nostr-tools";
 import { createHash } from "node:crypto";
 
@@ -16,6 +17,8 @@ export function policyRelay({
   acceptPublication,
   latencyMs = 0,
   holdOlder = true,
+  // Release each held older page after this delay instead of on demand.
+  olderPageDelayMs = null,
 }) {
   const sockets = [];
   // A page can close between sending a publication and its acceptance. The
@@ -97,6 +100,8 @@ export function policyRelay({
           ? "observer"
           : undefined);
   report.wireFrames = [];
+  // Subscription ids are per socket: pair a frame with its socket to match it.
+  report.socketFrames = [];
   report.startupFrames = [];
   let emptyRoster = false;
   let heldContent = false;
@@ -108,6 +113,7 @@ export function policyRelay({
   };
   function emit(socket, frame) {
     report.wireFrames.push(frame);
+    report.socketFrames.push({ socket: sockets.indexOf(socket), frame });
     if (wsLimit)
       report.startupFrames.push({
         socket: sockets.indexOf(socket),
@@ -183,20 +189,38 @@ export function policyRelay({
     emptyRoster() {
       emptyRoster = true;
     },
+    // Quotas refuse primary's next matching read: every joined community
+    // reads its own roster and heads at startup.
     quotaNextRoster(seconds = 1) {
-      quotas.set("roster", seconds);
+      quotas.set("primary/roster", seconds);
     },
     quotaNextHead(channel, seconds = 1) {
-      quotas.set(channel, seconds);
+      quotas.set(`primary/${channel}`, seconds);
     },
     quotaNextOlder(channel, seconds = 1) {
-      quotas.set(`older:${channel}`, seconds);
+      quotas.set(`primary/older:${channel}`, seconds);
     },
     /** With `only`, just the signed requests to those paths. */
     refuseSigned(status, body, only) {
       refusal = status ? { status, body, only } : undefined;
     },
     async fetch(url, init) {
+      const holdProfile = (result) =>
+        new Promise((resolve, reject) => {
+          const held = { pending: true, aborted: false };
+          profileHolds.push(held);
+          const abort = () => {
+            held.pending = false;
+            held.aborted = true;
+            reject(init.signal.reason);
+          };
+          init.signal.addEventListener("abort", abort, { once: true });
+          pendingProfiles.push(() => {
+            held.pending = false;
+            init.signal.removeEventListener("abort", abort);
+            resolve(Response.json(result));
+          });
+        });
       try {
         if (latencyMs)
           await new Promise((resolve) => setTimeout(resolve, latencyMs));
@@ -272,6 +296,32 @@ export function policyRelay({
           return Response.json(
             filters.flatMap((filter) => answer(communityOf(url), filter)),
           );
+        }
+        if (filters.length === 2 && filters[1].kinds?.includes(30315)) {
+          // Byline profiles with the statuses their rows show.
+          const [names, statuses] = filters;
+          expect(names).toEqual({
+            kinds: [0],
+            authors: expect.any(Array),
+            limit: expect.any(Number),
+          });
+          expect(statuses).toEqual({
+            kinds: [30315],
+            "#d": ["general"],
+            authors: expect.any(Array),
+            limit: statuses.authors.length,
+          });
+          expect(statuses.authors.length).toBeLessThanOrEqual(100);
+          expect(
+            statuses.authors.every((id) => names.authors.includes(id)),
+          ).toBe(true);
+          const community = communityOf(url);
+          for (const filter of filters)
+            report.queries.push({ community, filter, at: performance.now() });
+          const result = filters.flatMap((filter) => answer(community, filter));
+          return names.authors.some((id) => heldAuthors.has(id))
+            ? holdProfile(result)
+            : Response.json(result);
         }
         if (filters.length === 2 && filters[0].kinds?.includes(39000)) {
           // Exact channel authority lookup, distinct from sidebar preferences.
@@ -423,15 +473,15 @@ export function policyRelay({
           );
         }
         if (filters.length !== 1) {
-          // Sidebar preferences read only these five exact own-author coordinates.
-          expect(filters).toHaveLength(5);
-          expect(filters.map((filter) => filter["#d"]?.[0]).sort()).toEqual([
-            "channel-filter",
-            "channel-mutes",
-            "channel-sections",
-            "channel-sort",
-            "channel-stars",
-          ]);
+          const legacySortAndFilter =
+            filters.length === 2 &&
+            filters
+              .map((filter) => filter["#d"]?.[0])
+              .sort()
+              .join() === "channel-filter,channel-sort";
+          expect(
+            legacySortAndFilter || isSidebarPreferencesBatch(filters),
+          ).toBe(true);
           for (const filter of filters) {
             expect(filter.kinds).toEqual([30078]);
             expect(filter.authors).toEqual([viewer]);
@@ -499,7 +549,7 @@ export function policyRelay({
         const channel = filter["#h"]?.[0];
         // Head catch-up is an exact top-level channel window, not a batched
         // sidebar preview that happens to contain that channel.
-        const quota = filter.kinds?.includes(39002)
+        const scope = filter.kinds?.includes(39002)
           ? "roster"
           : filter.kinds?.includes(9)
             ? filter.until === undefined
@@ -508,6 +558,7 @@ export function policyRelay({
                 : undefined
               : `older:${channel}`
             : undefined;
+        const quota = scope && `${community}/${scope}`;
         if (quotas.has(quota)) {
           const seconds = quotas.get(quota);
           quotas.delete(quota);
@@ -528,12 +579,15 @@ export function policyRelay({
           heldUnread &&
           filter.kinds?.includes(9) &&
           filter["#h"]?.length &&
+          // Unread repair asks for edits too; a search preview's plain
+          // channel read does not.
+          filter.include_aux &&
           filter.top_level === undefined &&
           filter.depth_limit === undefined &&
           filter.until === undefined
         )
           return new Promise((resolve, reject) => {
-            const held = { pending: true, aborted: false };
+            const held = { community, pending: true, aborted: false };
             unreadHolds.push(held);
             const abort = () => {
               held.pending = false;
@@ -552,21 +606,7 @@ export function policyRelay({
           filter.kinds?.includes(0) &&
           filter.authors?.some((id) => heldAuthors.has(id))
         )
-          return new Promise((resolve, reject) => {
-            const held = { pending: true, aborted: false };
-            profileHolds.push(held);
-            const abort = () => {
-              held.pending = false;
-              held.aborted = true;
-              reject(init.signal.reason);
-            };
-            init.signal.addEventListener("abort", abort, { once: true });
-            pendingProfiles.push(() => {
-              held.pending = false;
-              init.signal.removeEventListener("abort", abort);
-              resolve(Response.json(result));
-            });
-          });
+          return holdProfile(result);
         if (
           filter.search === undefined &&
           filter.until !== undefined &&
@@ -575,7 +615,7 @@ export function policyRelay({
           return new Promise((resolve, reject) => {
             const abort = () => reject(init.signal.reason);
             init.signal.addEventListener("abort", abort, { once: true });
-            pending.push({
+            const receipt = {
               community,
               channel,
               filter,
@@ -584,7 +624,10 @@ export function policyRelay({
                 init.signal.removeEventListener("abort", abort);
                 resolve(Response.json(result));
               },
-            });
+            };
+            pending.push(receipt);
+            if (olderPageDelayMs !== null)
+              setTimeout(() => receipt.release(), olderPageDelayMs);
           });
         return Response.json(result);
       } catch (error) {

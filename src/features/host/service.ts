@@ -1,7 +1,10 @@
+import { runtimePerformance } from "../developer/runtime-performance";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "../../plugins/api";
 import { nativeIdentityEnabled } from "../identity/service";
+import type { SoloRegionBinding } from "../channel-navigation/solo-navigation-contract";
+import { repositoryFolders } from "../communities/repositories";
 
 export type HostRequest = Readonly<{
   url: string;
@@ -85,6 +88,8 @@ export type HostSavedBytes = Readonly<{
   sha256: string;
   /** Host wall-clock Unix milliseconds, not a deletion timer. */
   expiresAt: number;
+  /** Native recorded process-local, same-human-owner consent; not a deletion receipt. */
+  releaseAfterSend?: true;
 }>;
 /** Reusable NIP-OA proof for one agent key; preparing it does not submit it. */
 export type NipOaAuthorization = readonly [
@@ -192,6 +197,11 @@ type McpEvent =
  * This permits token reuse after initialization. The handler must bind identity
  * itself and grant every client the same authority. Defaults to false. */
 export type HostMcpOptions = Readonly<{ sharedSession?: boolean }>;
+export type HostRepositoryFolder = Readonly<{
+  name: string;
+  path: string;
+  displayPath: string;
+}>;
 export interface Host {
   externalMcpPairing?(
     operation: "get" | "resume" | "revoke",
@@ -218,8 +228,20 @@ export interface Host {
   ) => Promise<Uint8Array>;
   /** `path`, absolute or `~/…`, as an absolute directory without symbolic
    * links, created if missing, for a plugin whose manifest declares
-   * `host.files`. Desktop only. */
-  resolveDirectory?: (path: string) => Promise<string>;
+   * `host.files`. With `create: false`, a missing path or one that is not a
+   * directory rejects instead. Desktop only. */
+  resolveDirectory?: (
+    path: string,
+    options?: Readonly<{ create?: boolean }>,
+  ) => Promise<string>;
+  /** The immediate folders, sorted by name, of the repositories folder that
+   * `binding`'s community and account configured, for a plugin whose manifest
+   * declares `host.files`. Never creates it or follows a linked child. Rejects
+   * past 4096 entries or a 1 MiB listing. Desktop only. */
+  repositoryFolders?: (
+    binding: SoloRegionBinding,
+    signal: AbortSignal,
+  ) => Promise<readonly HostRepositoryFolder[]>;
   request(input: HostRequest): Promise<HostResponse>;
   /** POST-only, desktop and compatible native host required. A repeated call
    * authority rejects with unknown outcome, never resubmits or caches success.
@@ -245,10 +267,16 @@ export interface Host {
     options?: Readonly<{ timeoutMs?: number }>,
   ) => Promise<HostPage>;
   /** Requires host.managedFiles, not host.files. Keep bytes immutable through
-   * hashing/save. An ambiguous failure must not be automatically retried. */
+   * hashing/save. An ambiguous failure must not be automatically retried.
+   * releaseAfterSend defaults off. True requires compatible native acknowledgement
+   * and may refuse if native identity is unavailable/busy at commit. After the
+   * same human Nostr owner's confirmed attachment post, native makes one bounded
+   * best-effort release attempt. Consent is not durable or cross-process.
+   * Cleanup may never happen automatically; expiry only makes a file eligible for removal during a later save.
+   * Owner deletion, expiry sweeping, erasure and disk loss remain independent. */
   saveBytes?: (
     bytes: Uint8Array,
-    input: Readonly<{ sha256: string }>,
+    input: Readonly<{ sha256: string; releaseAfterSend?: boolean }>,
   ) => Promise<HostSavedBytes>;
   /** Removes this plugin's own managed file. Await attachment sends first;
    * Conservatively refuses app-wide while any plugin's host.readFile call or
@@ -512,14 +540,20 @@ export class HostService extends Service implements Host {
         });
       const reply = await answerMcp(handler, body);
       try {
-        await send(reply === undefined ? null : JSON.stringify(reply));
+        await send(
+          reply === undefined
+            ? null
+            : runtimePerformance.serializeMcpReply(reply),
+        );
       } catch (error) {
         // A reply that will not encode or is too large still answers the
         // request, so the agent is not left waiting. When the agent has
         // stopped waiting, this fails too.
-        await send(JSON.stringify(mcpError(requestId(body), error))).catch(
-          () => undefined,
-        );
+        await send(
+          runtimePerformance.serializeMcpReply(
+            mcpError(requestId(body), error),
+          ),
+        ).catch(() => undefined);
       }
     };
     const onEvent = new Channel<McpEvent>((event) => {
@@ -623,7 +657,10 @@ export class HostService extends Service implements Host {
     return new Uint8Array(data);
   }
 
-  async resolveDirectory(path: string): Promise<string> {
+  async resolveDirectory(
+    path: string,
+    { create = true }: Readonly<{ create?: boolean }> = {},
+  ): Promise<string> {
     const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
       throw new Error("Files require an installed desktop plugin");
@@ -631,7 +668,27 @@ export class HostService extends Service implements Host {
       id: owner.id,
       revision: owner.revision,
       path,
+      ...(create ? {} : { create }),
     }).catch(rethrow);
+  }
+
+  async repositoryFolders(
+    binding: SoloRegionBinding,
+    signal: AbortSignal,
+  ): Promise<readonly HostRepositoryFolder[]> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Files require an installed desktop plugin");
+    return repositoryFolders(binding.scope, signal, (path) =>
+      invoke<readonly HostRepositoryFolder[]>(
+        "plugin_host_repository_folders",
+        {
+          id: owner.id,
+          revision: owner.revision,
+          path,
+        },
+      ).catch(rethrow),
+    );
   }
 
   async request(input: HostRequest): Promise<HostResponse> {
@@ -760,7 +817,10 @@ export class HostService extends Service implements Host {
 
   async saveBytes(
     bytes: Uint8Array,
-    { sha256 }: Readonly<{ sha256: string }>,
+    {
+      sha256,
+      releaseAfterSend,
+    }: Readonly<{ sha256: string; releaseAfterSend?: boolean }>,
   ): Promise<HostSavedBytes> {
     const ctx = this.ctx;
     const owner = ctx.pluginOwner;
@@ -770,7 +830,8 @@ export class HostService extends Service implements Host {
       !(bytes instanceof Uint8Array) ||
       bytes.byteLength < 1 ||
       bytes.byteLength > BYTE_LIMIT ||
-      !/^[0-9a-f]{64}$/.test(sha256)
+      !/^[0-9a-f]{64}$/.test(sha256) ||
+      (releaseAfterSend !== undefined && typeof releaseAfterSend !== "boolean")
     )
       throw new Error("Invalid managed save bytes or SHA256");
     const size = bytes.byteLength;
@@ -784,6 +845,9 @@ export class HostService extends Service implements Host {
             "x-buzz-plugin-id": owner.id,
             "x-buzz-plugin-revision": owner.revision,
             "x-buzz-sha256": sha256,
+            ...(releaseAfterSend === true && {
+              "x-buzz-release-after-send": "1",
+            }),
           },
         },
       ).catch(rethrow);
@@ -799,6 +863,10 @@ export class HostService extends Service implements Host {
         saved.expiresAt <= 0
       )
         throw new Error("Invalid managed save result; outcome unknown");
+      if (releaseAfterSend === true && saved.releaseAfterSend !== true)
+        throw new Error(
+          "Release after send is unsupported; possibly saved, do not retry",
+        );
       return saved;
     } finally {
       lifetime.release();

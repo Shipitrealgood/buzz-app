@@ -43,3 +43,15 @@ The React tests exercised keyboard and pointer interactions with the shared Dial
 ## Handoff
 
 The independent reviewer owns the next gate on this committed checkout. Agent Settings/Edit and publication of the owner dependency are separate assignments.
+
+## Upstream integration at e567ac6f
+
+The merge integrates upstream `e567ac6f57a33332e43b72d6e9e04f8f30af7ddc` into the feature at `b0278f4a646b3bc84b3b7f4484b893d5bf0b5545`. For the integration review, compare each parent to the merge. The earlier gates above describe the pre-merge implementation.
+
+- In `AgentCreateDialog.tsx:482`, follow a delayed Automatic recommendation after Run on has switched to a registered host. Returning to This computer should resume the resolved local selection. The regression in `AgentCreateDialog.test.tsx:2399` also switches to Custom, selects a conventional remote provider and opens its introduction.
+- In `AgentCreateDialog.tsx:655`, check Run on from Automatic before expanding Custom. Registered-host placement has its own harness and reported-model choices. The local recommendation, its model and its thinking setting apply only to the local flow.
+- In `src/features/agents/service.ts:4717`, trace the retained pubkey, provisioned picture and retry configuration through upstream's remote creation path.
+- Compare the eight named Windows recovery cases in `.github/workflows/ci.yml:227` and the public owner revision to the first parent. The ordinary Windows workflow and upstream's reusable CI entry point both remain available.
+- Cargo resolved the public owner from the upstream lock and retained zip 9.2.2. The all-target dependency check found one error, RUSTSEC-2024-0384 for instant 0.1.13. The locked Cargo trees for Windows x86-64 and Linux x86-64 contain no normal or build dependency on instant. The all-target tree has one immediate dependent, nostr 0.44.8, which requires instant on wasm32.
+
+The four affected Vitest files passed 1,022 tests with one conditional skip. TypeScript, scoped Biome, Rust format and the upstream-relative whitespace check passed. The Linux checkout lacks GLib, GTK 3 and WebKitGTK 4.1 development metadata. Native execution, rendered desktop verification and a real host Create need their own evidence.
