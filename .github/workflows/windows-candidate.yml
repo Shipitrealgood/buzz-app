@@ -21,4 +21,5 @@ jobs:
       id-token: write
     with:
       candidates: true
+      verify_registered_hosts: true
       preview_version: 1.0.7-preview.${{ github.run_number }}

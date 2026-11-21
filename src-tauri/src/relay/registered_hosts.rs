@@ -168,7 +168,7 @@ impl<'a> Session<'a> {
             closed?;
             Ok::<_, anyhow::Error>(Some(value))
         };
-        fi.during_authorization(self.identity, &authorization, operation)
+        fi.during_authorization(self.identity, &authorization, Box::pin(operation))
             .await
             .map_err(anyhow::Error::msg)?
     }
@@ -307,7 +307,10 @@ pub(crate) async fn registered_host_recover<R: tauri::Runtime>(
             .device
             .as_mut()
             .ok_or_else(|| anyhow!(UNAVAILABLE))?;
-        let registry = session.recover(&fi, device).await.unwrap_or("unavailable");
+        // Tauri moves the release command future on the 1 MiB Windows UI stack.
+        let registry = Box::pin(session.recover(&fi, device))
+            .await
+            .unwrap_or("unavailable");
         // Even failure/cached results must be fenced to the native account.
         session.directory(device, registry)
     };

@@ -10,6 +10,10 @@ on:
         description: Build Windows/Linux candidates only (no publishing or macOS signing)
         type: boolean
         default: false
+      verify_registered_hosts:
+        description: Exercise registered-host commands in the installed Windows candidate
+        type: boolean
+        default: false
       release_version:
         description: Stable or beta version (X.Y.Z or X.Y.Z-beta.N) built from its v tag; empty builds a preview from main
         type: string
@@ -394,6 +398,28 @@ jobs:
             foreach ($value in @($env:BUZZ_UPDATER_PUBLIC_KEY, $env:BUZZ_UPDATER_ENDPOINT)) {
               if (!$value -or !$binary.Contains($value)) { throw 'App executable does not embed the updater configuration' }
             }
+          }
+      - name: Exercise registered-host IPC in the installed Windows candidate
+        if: inputs.candidates && inputs.verify_registered_hosts
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $listener.Start()
+          $port = $listener.LocalEndpoint.Port
+          $listener.Stop()
+          $env:WEBVIEW2_USER_DATA_FOLDER = "$env:RUNNER_TEMP\candidate-webview"
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port --proxy-server=http://127.0.0.1:1"
+          $env:HTTPS_PROXY = $env:HTTP_PROXY = 'http://127.0.0.1:1'
+          $env:NO_PROXY = 'localhost,127.0.0.1'
+          $app = Start-Process "$env:RUNNER_TEMP\candidate-install\Buzz.exe" -PassThru
+          try {
+            $env:BUZZ_TEST_CDP_PORT = $port
+            node --test --test-timeout=60000 scripts/verify-windows-registered-hosts.mjs
+            if ($app.HasExited) { throw "Installed Buzz exited during IPC (exit code $($app.ExitCode))" }
+            if ($LASTEXITCODE -ne 0) { throw 'Registered-host IPC smoke failed' }
+          } finally {
+            if (!$app.HasExited) { $app.Kill($true); $app.WaitForExit() }
           }
       - name: Stage candidate and checksum
         run: |

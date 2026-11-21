@@ -206,7 +206,7 @@ async fn with_mgmt<T>(
             Management::from_authenticated(true, &s.community, s.keys()?.public_key(), relay, ws)?;
         step(&mut mgmt).await
     };
-    fi.during_authorization(s.identity, &auth, op)
+    fi.during_authorization(s.identity, &auth, Box::pin(op))
         .await
         .map_err(msg_err)?
 }
@@ -756,7 +756,8 @@ async fn with_dev<R: tauri::Runtime, T>(
     async {
         let s = Session::capture(ctx.1, o.into(), c.into()).await?;
         let mut j = Journal::open(&ctx.0.path().app_local_data_dir()?)?;
-        step(&s, j.device.as_mut().context(super::UNAVAILABLE)?).await
+        // Keep journal operations out of the by-value Tauri dispatch future.
+        Box::pin(step(&s, j.device.as_mut().context(super::UNAVAILABLE)?)).await
     }
     .await
     .map_err(|e| e.to_string())
@@ -776,9 +777,11 @@ pub(crate) async fn registered_host_status<R: tauri::Runtime>(
         .await
         .map_err(|e| e.to_string())?;
     let scope = read_scope(&app, &s, &host, &generation).map_err(|e| e.to_string())?;
-    with_mgmt(&s, &fi, async |m| status_inner(&s, m, &scope).await)
-        .await
-        .map_err(|e| e.to_string())
+    Box::pin(with_mgmt(&s, &fi, async |m| {
+        status_inner(&s, m, &scope).await
+    }))
+    .await
+    .map_err(|e| e.to_string())
 }
 
 // Release the local file lock before independent discovery requests wait for a host.
@@ -835,7 +838,7 @@ pub(crate) async fn registered_host_models<R: tauri::Runtime>(
     let read = async {
         let s = Session::capture(&identity, input.owner, input.community).await?;
         let scope = read_scope(&app, &s, &input.host, &input.generation)?;
-        s.with_registry(&fi, async |registry| {
+        Box::pin(s.with_registry(&fi, async |registry| {
             // The signed request has a 60-second lifetime. Never extend it in the UI.
             let expires = now_secs()? + 60;
             let models = registry
@@ -852,7 +855,7 @@ pub(crate) async fn registered_host_models<R: tauri::Runtime>(
                 readiness: models.readiness,
                 availability: models.availability,
             })
-        })
+        }))
         .await?
         .context("Host model discovery unavailable")
     };
