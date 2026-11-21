@@ -22,21 +22,35 @@ fn recovery_ipc_refuses_another_owner_before_opening_storage_or_network() {
     let view = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
         .build()
         .unwrap();
-    let response = get_ipc_response(
-        &view,
-        tauri::webview::InvokeRequest {
-            cmd: "registered_host_recover".into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: view.url().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(
-                json!({ "community": COMMUNITY, "owner": keys(2).public_key().to_hex() }),
-            ),
-            headers: Default::default(),
-            invoke_key: INVOKE_KEY.into(),
-        },
-    );
-    assert_eq!(response.unwrap_err(), json!(UNAVAILABLE));
+    let other_owner = keys(2).public_key().to_hex();
+    for (cmd, body, error) in [
+        (
+            "registered_host_recover",
+            json!({ "community": COMMUNITY, "owner": other_owner }),
+            UNAVAILABLE,
+        ),
+        (
+            "registered_host_models",
+            json!({ "input": { "community": COMMUNITY, "owner": other_owner,
+            "host": keys(3).public_key().to_hex(), "generation": "aa".repeat(32), "runtimeId": "acp/claude",
+            "catalogRevision": "bb".repeat(32) } }),
+            "Active identity changed",
+        ),
+    ] {
+        let response = get_ipc_response(
+            &view,
+            tauri::webview::InvokeRequest {
+                cmd: cmd.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: view.url().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.into(),
+            },
+        );
+        assert_eq!(response.unwrap_err(), json!(error));
+    }
 }
 
 #[tokio::test]
@@ -506,7 +520,16 @@ async fn agent_authenticated_kind0_publication_uses_agent_keys_and_nip_oa_auth_t
 }
 
 #[tokio::test]
-async fn activate_profile_and_remove_lifecycle_with_tombstone() {
+async fn selected_model_activates_and_retries_without_redeploying() {
+    hosted_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn failed_first_launch_retries_on_the_original_identity() {
+    hosted_lifecycle(true).await;
+}
+
+async fn hosted_lifecycle(requires_retry: bool) {
     use buzz_core::{
         agent_models::{AgentModelInfo, AgentModelsResponse},
         harness::{AcpAvailabilityStatus, Readiness, RuntimeFacts},
@@ -627,7 +650,14 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
     let ops_srv = ops.clone();
     let current_revision = std::sync::Arc::new(std::sync::Mutex::new(0u64));
     let rev_srv = current_revision.clone();
-    let phase_mode = std::sync::Arc::new(std::sync::Mutex::new("needs-login".to_string()));
+    let phase_mode = std::sync::Arc::new(std::sync::Mutex::new(
+        if requires_retry {
+            "needs-login"
+        } else {
+            "applied"
+        }
+        .to_string(),
+    ));
     let phase_srv = phase_mode.clone();
     let owner_pk = owner.public_key();
     let relay_srv = relay.clone();
@@ -654,6 +684,20 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
                     else {
                         panic!("expected command");
                     };
+                    if authority.action == buzz_core::host_deployment::Action::Deploy {
+                        let buzz_core::host_deployment::Command::Deploy { config, .. } =
+                            wire::open_command(&host_srv, &ev, &authority).unwrap()
+                        else {
+                            panic!("expected deployment")
+                        };
+                        assert_eq!(authority.agent, agent_pk);
+                        assert_eq!(
+                            config.model,
+                            buzz_core::host_deployment::ModelSelection::Selected {
+                                id: "claude-sonnet".into()
+                            }
+                        );
+                    }
                     let mode = phase_srv.lock().unwrap().clone();
                     let t = Timestamp::now().as_secs();
                     let entry = match mode.as_str() {
@@ -705,13 +749,14 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
                             })
                         }
                         "applied" => {
-                            *rev_srv.lock().unwrap() = 2;
+                            let revision = authority.expected_revision + 1;
+                            *rev_srv.lock().unwrap() = revision;
                             let receipt = wire::result(
                                 &host_srv,
                                 &DeploymentResult {
                                     request: authority.clone(),
                                     outcome: Outcome::Applied,
-                                    applied_revision: Some(2),
+                                    applied_revision: Some(revision),
                                 },
                                 t,
                             )
@@ -721,17 +766,18 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
                                 "result": serde_json::to_string(&receipt).unwrap(),
                                 "state": "applied",
                                 "unit_id": "ef".repeat(32),
-                                "revision": 2
+                                "revision": revision
                             })
                         }
                         "cleaned" => {
-                            *rev_srv.lock().unwrap() = 3;
+                            let revision = authority.expected_revision + 1;
+                            *rev_srv.lock().unwrap() = revision;
                             let receipt = wire::result(
                                 &host_srv,
                                 &DeploymentResult {
                                     request: authority.clone(),
                                     outcome: Outcome::Cleaned,
-                                    applied_revision: Some(3),
+                                    applied_revision: Some(revision),
                                 },
                                 t,
                             )
@@ -741,7 +787,7 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
                                 "result": serde_json::to_string(&receipt).unwrap(),
                                 "state": "cleaned",
                                 "unit_id": "ef".repeat(32),
-                                "revision": 3
+                                "revision": revision
                             })
                         }
                         other => panic!("unexpected mode {other}"),
@@ -812,31 +858,42 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
     .unwrap();
     let k0_url = format!("ws://{kind0_addr}");
 
-    // 1. PendingLogin activate -> NeedsSetup
-    let res1 = provider::activate_inner(
+    let input = |auth: [String; 4], model: Option<&str>| provider::ActivateInput {
+        community: COMMUNITY.into(),
+        owner: owner.public_key().to_hex(),
+        pubkey: prov.pubkey.clone(),
+        name: "Netcup Agent".into(),
+        nip_oa: auth,
+        host: Some(scope.host.to_hex()),
+        generation: Some(scope.generation.clone()),
+        runtime_id: Some("acp/claude".into()),
+        model_id: model.map(str::to_owned),
+        catalog_revision: Some(catalog_rev.clone()),
+        effort: None,
+    };
+    // A pre-discovery saved request cannot publish a profile or start a model-free deployment.
+    assert!(provider::activate_inner(
         &session,
         device,
         &mut mgmt,
-        provider::ActivateInput {
-            community: COMMUNITY.into(),
-            owner: owner.public_key().to_hex(),
-            pubkey: prov.pubkey.clone(),
-            name: "Netcup Agent".into(),
-            nip_oa: nip_oa_1.clone(),
-            host: Some(scope.host.to_hex()),
-            generation: Some(scope.generation.clone()),
-            runtime_id: Some("acp/claude".into()),
-            model_id: None,
-            effort: None,
-        },
-        Some(&k0_url),
+        input(nip_oa_1.clone(), None),
+        Some(&k0_url)
     )
     .await
-    .unwrap();
-    assert!(matches!(res1, provider::ActivateResult::NeedsSetup { .. }));
+    .is_err());
+    assert!(kind0_events.lock().unwrap().is_empty());
+    assert!(ops.lock().unwrap().is_empty());
+    let first = provider::activate_inner(
+        &session,
+        device,
+        &mut mgmt,
+        input(nip_oa_1.clone(), Some("claude-sonnet")),
+        Some(&k0_url),
+    )
+    .await;
+    assert_eq!(first.is_err(), requires_retry, "{first:?}");
+    assert_eq!(ops.lock().unwrap().len(), 1);
     assert_eq!(kind0_events.lock().unwrap().len(), 1);
-
-    // 2. Selected activate with a separate authorize_agent call (distinct aux_rand) + effort -> Applied
     let nip_oa_2: [String; 4] = identity
         .authorize_agent(owner.public_key().to_hex(), prov.pubkey.clone())
         .await
@@ -845,28 +902,20 @@ async fn activate_profile_and_remove_lifecycle_with_tombstone() {
         .unwrap();
     assert_ne!(nip_oa_2, nip_oa_1);
     *phase_mode.lock().unwrap() = "applied".into();
-    let res2 = provider::activate_inner(
+    provider::activate_inner(
         &session,
         device,
         &mut mgmt,
-        provider::ActivateInput {
-            community: COMMUNITY.into(),
-            owner: owner.public_key().to_hex(),
-            pubkey: prov.pubkey.clone(),
-            name: "Netcup Agent".into(),
-            nip_oa: nip_oa_2,
-            host: Some(scope.host.to_hex()),
-            generation: Some(scope.generation.clone()),
-            runtime_id: Some("acp/claude".into()),
-            model_id: Some("claude-sonnet".into()),
-            effort: Some("high".into()),
-        },
+        input(nip_oa_2, Some("claude-sonnet")),
         Some(&k0_url),
     )
     .await
     .unwrap();
-    assert!(matches!(res2, provider::ActivateResult::Applied { .. }));
-
+    assert_eq!(
+        ops.lock().unwrap().len(),
+        if requires_retry { 2 } else { 1 }
+    );
+    assert_eq!(kind0_events.lock().unwrap().len(), 1);
     // 3. Profile rename publishes agent-signed kind 0 without redeploy
     provider::profile_inner(
         &session,

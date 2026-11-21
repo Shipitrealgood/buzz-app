@@ -66,8 +66,8 @@ import {
   useAgentSaveReports,
 } from "../../features/agents/AgentSaveButton";
 import { useAgents, useChannelChoices } from "../../features/agents/react";
-import type { OldTeam, PortableAgent } from "../../features/agents/native";
 import type { RegisteredHost } from "../../features/agents/registered-hosts";
+import type { OldTeam, PortableAgent } from "../../features/agents/native";
 import type {
   Agent,
   Agents,
@@ -192,15 +192,15 @@ export function AgentsPage({
   linkRenderers,
   loadRegisteredHosts,
 }: {
+  loadRegisteredHosts?: (
+    signal: AbortSignal,
+  ) => Promise<readonly RegisteredHost[]>;
   agents: Agents;
   relay: RelayData;
   communities?: CommunityReader | undefined;
   navigation?: PageNavigation;
   navigator?: Navigation;
   linkRenderers?: ConversationExtensions["links"] | undefined;
-  loadRegisteredHosts?: (
-    signal: AbortSignal,
-  ) => Promise<readonly RegisteredHost[]>;
 }) {
   const { snapshot, types } = useAgents(agents);
   const connection = useRelayConnection(relay);
@@ -224,7 +224,6 @@ export function AgentsPage({
   };
   const [selectedKey, setSelectedKey] = useState<string>();
   const [creating, setCreating] = useState(false);
-  const [continuing, setContinuing] = useState<Agent>();
   // Which import the dialog shows follows the menu it was opened from.
   const [flow, setFlow] = useState<"import" | "import-team">();
   // A team being edited by its id, or "new" for one being made.
@@ -721,7 +720,6 @@ export function AgentsPage({
         channels={channels}
         onClose={closePanel}
         onRemoved={() => removed(selected.pubkey)}
-        onContinueSetup={(target) => setContinuing(target)}
         openSettings={openSettings}
       />
     ) : (
@@ -987,31 +985,20 @@ export function AgentsPage({
       )}
       {creating && (
         <AgentCreateDialog
+          key={JSON.stringify([
+            connection.generation,
+            connection.viewer,
+            connection.origin,
+          ])}
+          {...(loadRegisteredHosts ? { loadRegisteredHosts } : {})}
           agents={agents}
           types={types}
           community={
             connection.status === "ready" ? connection.origin : undefined
           }
-          {...(loadRegisteredHosts ? { loadRegisteredHosts } : {})}
           onClose={() => setCreating(false)}
           onCreated={(agent) => {
             setCreating(false);
-            changeTab("yours");
-            build(agent.pubkey);
-          }}
-        />
-      )}
-      {continuing && (
-        <AgentCreateDialog
-          agents={agents}
-          types={types}
-          unfinished={continuing}
-          community={
-            connection.status === "ready" ? connection.origin : undefined
-          }
-          onClose={() => setContinuing(undefined)}
-          onCreated={(agent) => {
-            setContinuing(undefined);
             changeTab("yours");
             build(agent.pubkey);
           }}
@@ -1598,7 +1585,6 @@ function AgentPeek({
   channels,
   onClose,
   onRemoved,
-  onContinueSetup,
   openSettings,
 }: {
   agents: Agents;
@@ -1607,20 +1593,11 @@ function AgentPeek({
   channels: readonly ChannelChoice[];
   onClose(): void;
   onRemoved(): void;
-  onContinueSetup?: (agent: Agent) => void;
   openSettings: ((section: string) => void) | undefined;
 }) {
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState("");
   const finish = async () => {
-    if (
-      type?.CreateConfiguration &&
-      agent.config !== undefined &&
-      onContinueSetup
-    ) {
-      onContinueSetup(agent);
-      return;
-    }
     setFinishing(true);
     setError("");
     try {

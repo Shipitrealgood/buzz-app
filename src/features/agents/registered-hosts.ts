@@ -59,29 +59,18 @@ export type RegisteredHostModel = Readonly<{
   description: string | null;
 }>;
 
-export type RegisteredHostObservation = Readonly<{
+export type RegisteredHostModels = Readonly<{
   expiresAt: number;
-  readiness: HostReadiness | null;
-  availability: HostRuntimeAvailability | null;
-  modelsState: "available" | "empty" | "unavailable" | "unsupported";
-  unavailableReason: string | null;
-  models: readonly RegisteredHostModel[];
+  readiness: HostReadiness;
+  availability: HostRuntimeAvailability;
+  models:
+    | {
+        state: "available";
+        catalog: { models: readonly RegisteredHostModel[] };
+      }
+    | { state: "empty" | "unsupported" }
+    | { state: "unavailable"; reason: string };
 }>;
-
-export type RegisteredHostActivateOutcome =
-  | Readonly<{
-      status: "applied";
-      pubkey: string;
-      unit: string | null;
-      revision: number;
-    }>
-  | Readonly<{
-      status: "needs-setup";
-      pubkey: string;
-      state: string;
-      observation: RegisteredHostObservation | null;
-      message: string;
-    }>;
 
 async function scopedInvoke<T>(
   currentScope: () => RegisteredHostScope | undefined,
@@ -156,6 +145,16 @@ export function nativeRegisteredHosts(
       signal: AbortSignal,
     ): Promise<RegisteredHostStatus> =>
       run(signal, "registered_host_status", (s) => ({ ...s, ...input })),
+    models: (
+      input: Readonly<{
+        host: string;
+        generation: string;
+        runtimeId: string;
+        catalogRevision: string;
+      }>,
+      signal: AbortSignal,
+    ): Promise<RegisteredHostModels> =>
+      inputRun(signal, "registered_host_models", input),
     async provision(
       input: Readonly<{
         host: string;
@@ -185,20 +184,11 @@ export function nativeRegisteredHosts(
         generation?: string;
         runtimeId?: string;
         modelId?: string;
+        catalogRevision?: string;
         effort?: string;
       }>,
       signal: AbortSignal,
-    ): Promise<RegisteredHostActivateOutcome> =>
-      inputRun(signal, "registered_host_activate", input),
-    setupState: (
-      input: Readonly<{ pubkey: string; refresh?: boolean }>,
-      signal: AbortSignal,
-    ): Promise<RegisteredHostActivateOutcome> =>
-      run(signal, "registered_host_setup_state", (s) => ({
-        ...s,
-        pubkey: input.pubkey,
-        refresh: Boolean(input.refresh),
-      })),
+    ): Promise<void> => inputRun(signal, "registered_host_activate", input),
     profile: (
       input: Readonly<{ pubkey: string; name: string; picture?: string }>,
       signal: AbortSignal,

@@ -69,11 +69,6 @@ const startingConfig = (type: RegisteredAgentType | undefined) => {
   }
 };
 
-const hostedConfig = (value: unknown): HostedAgentConfig | undefined =>
-  value && typeof value === "object" && "host" in value
-    ? (value as HostedAgentConfig)
-    : undefined;
-
 export function AgentCreateDialog({
   agents,
   types,
@@ -84,7 +79,6 @@ export function AgentCreateDialog({
   draft,
   onCreate,
   update,
-  unfinished,
   loadRegisteredHosts,
 }: {
   agents: Agents;
@@ -103,25 +97,21 @@ export function AgentCreateDialog({
     request: AgentUpdateRequest;
     onSave(input: NewAgent): Promise<void>;
   }>;
-  unfinished?: Agent;
   loadRegisteredHosts?: (
     signal: AbortSignal,
   ) => Promise<readonly RegisteredHost[]>;
 }) {
   const edited = update?.agent;
-  const [activeUnfinished, setActiveUnfinished] = useState<Agent | undefined>(
-    unfinished,
-  );
   const [open, setOpen] = useState(true);
   const [name, setName] = useState(
     update
       ? (update.request.name ?? update.agent.name)
-      : (unfinished?.name ?? request?.name ?? draft?.name ?? ""),
+      : (request?.name ?? draft?.name ?? ""),
   );
   const [avatar, setAvatar] = useState<AvatarSelection>(() => {
     const picture = update
       ? (update.request.picture ?? update.agent.picture ?? "")
-      : (unfinished?.picture ?? request?.picture ?? draft?.picture);
+      : (request?.picture ?? draft?.picture);
     if (picture === undefined)
       return { kind: "gloopie", picture: randomAgentAvatar().url };
     // A card or request can name a pack avatar, which then animates.
@@ -136,9 +126,7 @@ export function AgentCreateDialog({
     (item) => item.key === REGISTERED_HOST_TYPE_KEY,
   );
   const [typeKey, setTypeKey] = useState(
-    (update
-      ? (update.request.type ?? update.agent.type)
-      : (unfinished?.type ?? request?.type)) ??
+    (update ? (update.request.type ?? update.agent.type) : request?.type) ??
       localTypes[0]?.key ??
       types[0]?.key ??
       "",
@@ -155,7 +143,6 @@ export function AgentCreateDialog({
   /** The agent's settings in `item`, or a new agent's defaults, with the
    * requested instructions. */
   const seed = (item: RegisteredAgentType | undefined, initial = true) => {
-    if (initial && unfinished?.config !== undefined) return unfinished.config;
     if (!update) {
       const config = startingConfig(item);
       const instructions =
@@ -175,23 +162,9 @@ export function AgentCreateDialog({
   };
   const [config, setConfig] = useState(() => seed(type));
   const [hosts, setHosts] = useState<readonly RegisteredHost[]>([]);
-  const [runOn, setRunOn] = useState<string>(() => {
-    const h = hostedConfig(unfinished?.config);
-    return unfinished?.type === REGISTERED_HOST_TYPE_KEY &&
-      h?.host &&
-      h?.generation
-      ? `${h.host}:${h.generation}`
-      : "local";
-  });
-  const frozen = Boolean(activeUnfinished || hostedConfig(config)?.frozen);
+  const [runOn, setRunOn] = useState("local");
   useEffect(() => {
-    if (
-      update ||
-      activeUnfinished ||
-      !registeredHostType ||
-      !loadRegisteredHosts
-    )
-      return;
+    if (update || !open || !registeredHostType || !loadRegisteredHosts) return;
     const controller = new AbortController();
     void loadRegisteredHosts(controller.signal).then(
       (next) => {
@@ -201,7 +174,7 @@ export function AgentCreateDialog({
       () => {},
     );
     return () => controller.abort();
-  }, [update, activeUnfinished, registeredHostType, loadRegisteredHosts]);
+  }, [update, open, registeredHostType, loadRegisteredHosts]);
   const preview = migration(type);
   const [dirty, setDirty] = useState(Boolean(update));
   const [pending, setPending] = useState(false);
@@ -257,7 +230,6 @@ export function AgentCreateDialog({
     setError("");
   };
   const choose = (key: string) => {
-    if (frozen) return;
     const item = types.find((candidate) => candidate.key === key);
     if (!item || key === type?.key) return;
     // A creation request seeds only the first harness, not later choices.
@@ -277,7 +249,7 @@ export function AgentCreateDialog({
     );
   };
   const chooseRunOn = (nextRunOn: string) => {
-    if (frozen || pending || nextRunOn === runOn) return;
+    if (pending || nextRunOn === runOn) return;
     const carried = !type?.carry ? undefined : type.carry(config).instructions;
     const found =
       nextRunOn === "local"
@@ -302,35 +274,35 @@ export function AgentCreateDialog({
         : base,
     );
   };
-  const applyUnfinished = (agent: Agent) => {
-    setActiveUnfinished(agent);
-    setConfig(agent.config);
-    setShowRemoteIntro(false);
-    setPending(false);
-    setDirty(true);
-  };
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const create = async (introduced = false) => {
     if (!type || pending || avatarBusy || !canCreate) return;
     if (!name.trim()) {
       namePrompt.prompt();
       return;
     }
-    if (!update && !activeUnfinished && type.remote && !introduced) {
+    if (
+      !update &&
+      type.key !== REGISTERED_HOST_TYPE_KEY &&
+      type.remote &&
+      !introduced
+    ) {
       setShowRemoteIntro(true);
       return;
     }
     setPending(true);
     setError("");
     try {
-      if (activeUnfinished) {
-        const done = await agents.finish(activeUnfinished.pubkey, { config });
-        if (done.unfinished && done.config) return applyUnfinished(done);
-        onCreated(done);
-        return;
-      }
       const picture =
         (await avatarRef.current?.prepare()) ??
         (avatar.kind === "emoji" ? "" : avatar.picture);
+      if (!mounted.current) return;
       const input = {
         type: type.key,
         name: name.trim(),
@@ -343,14 +315,7 @@ export function AgentCreateDialog({
         const created = await (onCreate
           ? onCreate(input)
           : agents.create(input));
-        if (
-          created.unfinished &&
-          created.config !== undefined &&
-          created.type === REGISTERED_HOST_TYPE_KEY
-        ) {
-          return applyUnfinished(created);
-        }
-        onCreated(created);
+        if (mounted.current) onCreated(created);
       }
     } catch (reason) {
       setError(message(reason));
@@ -359,38 +324,27 @@ export function AgentCreateDialog({
   };
   const runOnOptions = [
     { value: "local", label: "This computer" },
-    ...(hosts.length > 0
-      ? hosts.map((h) => ({
-          value: `${h.host}:${h.generation}`,
-          label: h.label?.trim() || `Host ${h.host.slice(0, 8)}`,
-        }))
-      : runOn !== "local"
-        ? [
-            {
-              value: runOn,
-              label: hostedConfig(config)?.hostLabel || "Registered host",
-            },
-          ]
-        : []),
+    ...hosts.map((h) => ({
+      value: `${h.host}:${h.generation}`,
+      label: h.label?.trim() || `Host ${h.host.slice(0, 8)}`,
+    })),
   ];
-  const runOnControl = !update &&
-    registeredHostType &&
-    (hosts.length > 0 || runOn !== "local") && (
-      <PreferenceRow
-        title="Run on"
-        trailing={
-          <Select
-            label="Run on"
-            variant="compact"
-            align="end"
-            value={runOn}
-            disabled={pending || frozen}
-            groups={[{ label: "", options: runOnOptions }]}
-            onValueChange={chooseRunOn}
-          />
-        }
-      />
-    );
+  const runOnControl = !update && registeredHostType && hosts.length > 0 && (
+    <PreferenceRow
+      title="Run on"
+      trailing={
+        <Select
+          label="Run on"
+          variant="compact"
+          align="end"
+          value={runOn}
+          disabled={pending}
+          groups={[{ label: "", options: runOnOptions }]}
+          onValueChange={chooseRunOn}
+        />
+      }
+    />
+  );
   const localHarnessControl = (
     <PreferenceRow
       id={harnessId}
@@ -403,7 +357,7 @@ export function AgentCreateDialog({
             align="end"
             value={type?.key ?? ""}
             leading={<TypeIcon type={type} size={20} />}
-            disabled={pending || frozen || localTypes.length < 2}
+            disabled={pending || localTypes.length < 2}
             groups={[true, false]
               .map((remote) => ({
                 label: remote ? "Remote" : "Local",
@@ -460,11 +414,9 @@ export function AgentCreateDialog({
       title={
         showRemoteIntro
           ? "Meet your remote agent"
-          : activeUnfinished
-            ? `Finish ${activeUnfinished.name}`
-            : edited
-              ? `Edit ${edited.name}`
-              : "Create agent"
+          : edited
+            ? `Edit ${edited.name}`
+            : "Create agent"
       }
       description={
         showRemoteIntro
@@ -520,11 +472,7 @@ export function AgentCreateDialog({
               avatarBusy || pending || !type || !canCreate || !name.trim()
             }
           >
-            {activeUnfinished
-              ? "Finish setup"
-              : update
-                ? "Save changes"
-                : "Create agent"}
+            {update ? "Save changes" : "Create agent"}
           </Button>
         )
       }
@@ -547,7 +495,7 @@ export function AgentCreateDialog({
               <AgentAvatarPicker
                 name={name}
                 selection={avatar}
-                disabled={pending || frozen}
+                disabled={pending}
                 community={community}
                 onBusyChange={setAvatarBusy}
                 onChange={(selection) => {
@@ -575,7 +523,7 @@ export function AgentCreateDialog({
                   ref={nameField}
                   placeholder="Name"
                   value={name}
-                  disabled={pending || frozen}
+                  disabled={pending}
                   onChange={(event) => {
                     setName(event.target.value);
                     namePrompt.named(event.target.value);
@@ -595,7 +543,7 @@ export function AgentCreateDialog({
           >
             {Configuration ? (
               <Configuration
-                key={type.key}
+                key={type.key === REGISTERED_HOST_TYPE_KEY ? runOn : type.key}
                 {...(edited ? { agent: edited } : {})}
                 config={config}
                 disabled={pending}
@@ -642,7 +590,7 @@ export function AgentCreateDialog({
             <Create
               key={type.key}
               config={config}
-              disabled={pending || frozen}
+              disabled={pending}
               onChange={(next) => {
                 setConfig(next);
                 setDirty(true);

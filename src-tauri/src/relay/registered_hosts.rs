@@ -112,6 +112,20 @@ impl<'a> Session<'a> {
     }
 
     async fn recover(&self, fi: &FederatedIdentity, device: &mut Device) -> Result<&'static str> {
+        Ok(self
+            .with_registry(fi, async |registry| {
+                self.recover_registry(registry, device).await
+            })
+            .await?
+            .map_or("unsupported", |()| "available"))
+    }
+
+    /// Both finite registry reads use the app's FI assertion and identity guard.
+    async fn with_registry<T>(
+        &self,
+        fi: &FederatedIdentity,
+        read: impl AsyncFnOnce(&mut Registry) -> Result<T>,
+    ) -> Result<Option<T>> {
         // Reuse bounded native HTTP discovery and FI authorization. Registry's
         // convenience connect method does not carry the app's FI assertion.
         let url = origin(&self.community).map_err(anyhow::Error::msg)?;
@@ -120,7 +134,7 @@ impl<'a> Session<'a> {
             .map_err(anyhow::Error::msg)?;
         self.keys()?;
         if metadata["host_registry"].is_null() {
-            return Ok("unsupported");
+            return Ok(None);
         }
         let relay = Registry::capability(&metadata)?;
         let authorization = fi
@@ -147,8 +161,12 @@ impl<'a> Session<'a> {
                 socket,
             )?;
             // Never synchronize: that method also resends durable mutations.
-            self.recover_registry(&mut registry, device).await?;
-            Ok::<_, anyhow::Error>("available")
+            let result = read(&mut registry).await;
+            let closed = registry.disconnect().await;
+            self.keys()?;
+            let value = result?;
+            closed?;
+            Ok::<_, anyhow::Error>(Some(value))
         };
         fi.during_authorization(self.identity, &authorization, operation)
             .await

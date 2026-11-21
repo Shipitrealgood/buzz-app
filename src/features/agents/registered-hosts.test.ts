@@ -198,43 +198,26 @@ describe("native registered host recovery", () => {
       },
     });
 
-    call.mockResolvedValueOnce({
-      status: "needs-setup",
-      pubkey,
-      state: "needs-login",
-      observation: null,
-      message: "Choose a model",
+    const modelQuery = {
+      host,
+      generation,
+      runtimeId: "acp/claude",
+      catalogRevision: "aa".repeat(32),
+    };
+    await adapter.models(modelQuery, signal);
+    expect(call).toHaveBeenLastCalledWith("registered_host_models", {
+      input: { ...original, ...modelQuery },
     });
-    const act1 = await adapter.activate(
-      {
-        pubkey,
-        name: "Alpha",
-        nipOa: ["auth", original.owner, "", "00".repeat(64)],
-      },
-      signal,
-    );
-    expect(act1.status).toBe("needs-setup");
+    const activation = {
+      pubkey,
+      name: "Alpha",
+      nipOa: ["auth", original.owner, "", "00".repeat(64)] as const,
+      ...modelQuery,
+      modelId: "claude-sonnet",
+    };
+    await adapter.activate(activation, signal);
     expect(call).toHaveBeenLastCalledWith("registered_host_activate", {
-      input: {
-        ...original,
-        pubkey,
-        name: "Alpha",
-        nipOa: ["auth", original.owner, "", "00".repeat(64)],
-      },
-    });
-
-    call.mockResolvedValueOnce({
-      status: "needs-setup",
-      pubkey,
-      state: "needs-login",
-      observation: null,
-      message: "Refreshed",
-    });
-    await adapter.setupState({ pubkey, refresh: true }, signal);
-    expect(call).toHaveBeenLastCalledWith("registered_host_setup_state", {
-      ...original,
-      pubkey,
-      refresh: true,
+      input: { ...original, ...activation },
     });
 
     call.mockResolvedValueOnce(undefined);
@@ -259,7 +242,7 @@ describe("native registered host recovery", () => {
     });
   });
 
-  it("fences late replies on scope change for status and activate", async () => {
+  it("fences a late model reply across account replacement", async () => {
     let scope: RegisteredHostScope | undefined = original;
     let resolve!: (value: unknown) => void;
     call.mockImplementation(
@@ -269,8 +252,13 @@ describe("native registered host recovery", () => {
         }),
     );
     const adapter = nativeRegisteredHosts(() => scope);
-    const p = adapter.status(
-      { host: "cd".repeat(32), generation: "ef".repeat(32) },
+    const p = adapter.models(
+      {
+        host: "cd".repeat(32),
+        generation: "ef".repeat(32),
+        runtimeId: "acp/claude",
+        catalogRevision: "aa".repeat(32),
+      },
       new AbortController().signal,
     );
     const rejected = expect(p).rejects.toThrow("scope changed");

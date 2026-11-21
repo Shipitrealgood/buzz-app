@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { ModelFamilyMenu } from "../../features/agents/ModelFamilyMenu";
 import type {
@@ -13,7 +7,7 @@ import type {
   AgentViewProps,
 } from "../../features/agents/service";
 import type {
-  RegisteredHostObservation,
+  RegisteredHostModels,
   RegisteredHostRuntime,
   RegisteredHostStatus,
   nativeRegisteredHosts,
@@ -34,12 +28,8 @@ export type HostedAgentConfig = Readonly<{
   harnessId?: string;
   instructions: string;
   modelId: string;
-  effort: string;
-  pubkey?: string;
-  frozen?: boolean;
-  applied?: boolean;
-  observation?: RegisteredHostObservation;
-  statusMessage?: string;
+  catalogRevision?: string;
+  modelsExpireAt?: number;
 }>;
 export const EMPTY_HOSTED_CONFIG: HostedAgentConfig = {
   host: "",
@@ -47,17 +37,8 @@ export const EMPTY_HOSTED_CONFIG: HostedAgentConfig = {
   runtimeId: "",
   instructions: "",
   modelId: "",
-  effort: "",
 };
 
-const EFFORT_HARNESSES = new Set(["claude", "codex", "goose", "buzz-agent"]);
-const EFFORT_OPTIONS = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-] as const;
-const defined = <T extends Record<string, unknown>>(obj: T) =>
-  Object.fromEntries(Object.entries(obj).filter(([, v]) => Boolean(v)));
 const runtimeTitle = (
   rt: Pick<RegisteredHostRuntime, "runtimeId" | "harnessId">,
 ) => {
@@ -68,37 +49,57 @@ const runtimeTitle = (
       ? `${id[0].toUpperCase()}${id.slice(1)}`
       : id;
 };
-const supportsEffort = (h: string | undefined, r: string) =>
-  EFFORT_HARNESSES.has(h ?? r.split("/").pop() ?? "");
 const errMsg = (r: unknown, fb: string) =>
   r instanceof Error ? r.message : fb;
 
-function readinessMessage(
-  obs: RegisteredHostObservation | undefined,
-  fallback?: string,
-): string {
-  if (!obs)
-    return fallback || "Prepare this host agent to inspect available models.";
-  if (obs.availability && obs.availability !== "available")
+function readinessMessage(obs: RegisteredHostModels | undefined): string {
+  if (!obs) return "";
+  if (obs.availability !== "available")
     return `Host runtime is currently ${obs.availability.replaceAll("_", " ")}.`;
   if (obs.readiness === "logged-out")
-    return "Sign in to this harness on the host computer, then click Refresh.";
-  if (obs.readiness === "config-invalid" || obs.readiness === "unsupported")
-    return `Host configuration is ${obs.readiness}; check the host setup and Refresh.`;
-  if (obs.readiness === "unknown")
-    return "Could not verify host readiness. Try Refresh.";
-  if (obs.modelsState === "empty")
-    return "No models were reported on this host. Refresh to try again.";
-  if (obs.modelsState !== "available")
-    return `Host models are ${obs.modelsState}${obs.unavailableReason ? ` (${obs.unavailableReason})` : ""}.`;
-  return obs.expiresAt <= Math.floor(Date.now() / 1000)
-    ? "Host model list expired. Click Refresh to load current models."
-    : fallback || "";
+    return "Sign in to this harness on the host computer, then choose Refresh.";
+  if (obs.readiness !== "logged-in" && obs.readiness !== "not-applicable")
+    return "Could not verify host readiness. Check the host setup and choose Refresh.";
+  switch (obs.models.state) {
+    case "available":
+      return "";
+    case "empty":
+      return "No models were reported on this host.";
+    case "unsupported":
+      return "This host harness does not support model discovery.";
+    case "unavailable":
+      return `Host models are unavailable (${obs.models.reason}).`;
+  }
 }
 
 export function createRegisteredHostType(
   hosts: RegisteredHostsClient,
 ): AgentType<HostedAgentConfig> {
+  async function currentChoice(value: unknown, signal: AbortSignal) {
+    const cfg = value as HostedAgentConfig | undefined;
+    if (!cfg?.modelId || !cfg.catalogRevision || !cfg.modelsExpireAt)
+      throw new Error("Choose a model on the host before creating the agent.");
+    if (cfg.modelsExpireAt * 1000 <= Date.now()) {
+      const { host, generation, runtimeId, catalogRevision } = cfg;
+      const result = await hosts.models(
+        { host, generation, runtimeId, catalogRevision },
+        signal,
+      );
+      const problem = readinessMessage(result);
+      if (problem) throw new Error(problem);
+      if (
+        result.expiresAt * 1000 <= Date.now() ||
+        result.models.state !== "available" ||
+        !result.models.catalog.models.some((m) => m.id === cfg.modelId)
+      )
+        throw new Error(
+          "The selected model is no longer available. Refresh and choose a model.",
+        );
+    }
+    signal.throwIfAborted();
+    return cfg;
+  }
+
   function CreateConfiguration({
     config,
     onChange,
@@ -111,147 +112,105 @@ export function createRegisteredHostType(
   }) {
     const cfg = config ?? EMPTY_HOSTED_CONFIG;
     const [status, setStatus] = useState<RegisteredHostStatus>();
-    const [loadingStatus, setLoadingStatus] = useState(false);
-    const [refreshing, setRefreshing] = useState(false);
+    const [observation, setObservation] = useState<RegisteredHostModels>();
     const [error, setError] = useState("");
-    const refreshCtrl = useRef<AbortController | null>(null);
-
+    const [clock, setClock] = useState(Date.now);
     useEffect(() => {
-      if (cfg.frozen || !cfg.host || !cfg.generation) {
-        setStatus(undefined);
-        setLoadingStatus(false);
-        return;
+      if (status || error) return;
+      const ctrl = new AbortController();
+      if (cfg.host && cfg.generation) {
+        void hosts
+          .status({ host: cfg.host, generation: cfg.generation }, ctrl.signal)
+          .then(
+            (result) => {
+              if (!ctrl.signal.aborted) setStatus(result);
+            },
+            (reason) => {
+              if (!ctrl.signal.aborted)
+                setError(errMsg(reason, "Could not load host harnesses."));
+            },
+          );
       }
-      const ctrl = new AbortController();
-      setLoadingStatus(true);
-      setError("");
-      setStatus(undefined);
-      void hosts
-        .status({ host: cfg.host, generation: cfg.generation }, ctrl.signal)
-        .then(
-          (next) => {
-            if (!ctrl.signal.aborted) {
-              setStatus(next);
-              setLoadingStatus(false);
-            }
-          },
-          (reason) => {
-            if (!ctrl.signal.aborted) {
-              setLoadingStatus(false);
-              setError(errMsg(reason, "Could not query host."));
-            }
-          },
-        );
       return () => ctrl.abort();
-    }, [cfg.frozen, cfg.host, cfg.generation]);
+    }, [cfg.host, cfg.generation, status, error]);
 
-    const refreshSetup = (explicit: boolean) => {
-      if (!cfg.pubkey) return;
-      refreshCtrl.current?.abort();
-      const ctrl = new AbortController();
-      refreshCtrl.current = ctrl;
-      setRefreshing(true);
-      setError("");
-      void hosts
-        .setupState({ pubkey: cfg.pubkey, refresh: explicit }, ctrl.signal)
-        .then(
-          (o) => {
-            if (ctrl.signal.aborted) return;
-            setRefreshing(false);
-            onChange(
-              o.status === "needs-setup"
-                ? {
-                    ...cfg,
-                    ...(o.observation ? { observation: o.observation } : {}),
-                    statusMessage: o.message,
-                  }
-                : {
-                    ...cfg,
-                    applied: true,
-                    statusMessage:
-                      "Host setup is complete. Finish setup to list this agent.",
-                  },
-              { suggested: true },
-            );
-          },
-          (reason) => {
-            if (!ctrl.signal.aborted) {
-              setRefreshing(false);
-              setError(errMsg(reason, "Could not refresh host setup."));
-            }
-          },
-        );
-    };
-
-    // biome-ignore lint/correctness/useExhaustiveDependencies: check initial observation expiry once when frozen setup opens.
+    const runtime = status?.runtimes.find((r) => r.runtimeId === cfg.runtimeId);
+    const revision =
+      status?.availability === "current" &&
+      runtime?.configSupported &&
+      runtime.availability === "available"
+        ? status.catalogRevision
+        : null;
     useEffect(() => {
-      if (!cfg.frozen || !cfg.pubkey) return;
-      if (
-        !cfg.observation ||
-        cfg.observation.expiresAt <= Math.floor(Date.now() / 1000)
-      )
-        refreshSetup(false);
-      return () => refreshCtrl.current?.abort();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cfg.frozen, cfg.pubkey]);
+      const ctrl = new AbortController();
+      setObservation(undefined);
+      setError("");
+      if (revision && status && status.expiresAt * 1000 > Date.now()) {
+        void hosts
+          .models(
+            {
+              host: cfg.host,
+              generation: cfg.generation,
+              runtimeId: cfg.runtimeId,
+              catalogRevision: revision,
+            },
+            ctrl.signal,
+          )
+          .then(
+            (result) => {
+              if (!ctrl.signal.aborted) setObservation(result);
+            },
+            (reason) => {
+              if (!ctrl.signal.aborted)
+                setError(errMsg(reason, "Could not load host models."));
+            },
+          );
+      }
+      return () => ctrl.abort();
+    }, [cfg.host, cfg.generation, cfg.runtimeId, revision, status]);
 
-    const runtimes = status?.runtimes ?? [];
-    const selectedRt = runtimes.find((r) => r.runtimeId === cfg.runtimeId);
-    const obs = cfg.observation;
-    const obsPermits = Boolean(
-      obs &&
-        obs.expiresAt > Math.floor(Date.now() / 1000) &&
-        obs.availability === "available" &&
-        (obs.readiness === "logged-in" || obs.readiness === "not-applicable") &&
-        obs.modelsState === "available" &&
-        obs.models.length > 0,
+    const expiresAt = Math.min(
+      status?.expiresAt ?? 0,
+      observation?.expiresAt ?? Infinity,
     );
-    const chosenModel = obs?.models.find((m) => m.id === cfg.modelId);
-    const ready = cfg.frozen
-      ? Boolean(cfg.pubkey && (cfg.applied || (obsPermits && chosenModel)))
-      : Boolean(
-          cfg.host &&
-            cfg.generation &&
-            cfg.runtimeId &&
-            status?.availability === "current" &&
-            selectedRt?.availability === "available" &&
-            selectedRt.configSupported,
-        );
-    useLayoutEffect(() => {
-      onReadyChange?.(ready);
-    }, [onReadyChange, ready]);
-
-    const label = runtimeTitle({
-      runtimeId: cfg.runtimeId,
-      harnessId: cfg.harnessId ?? null,
-    });
-    const harnessOpts = cfg.frozen
-      ? cfg.runtimeId
-        ? [{ value: cfg.runtimeId, label }]
-        : []
-      : runtimes.map((r) => ({
-          value: r.runtimeId,
-          label:
-            r.availability && r.availability !== "available"
-              ? `${runtimeTitle(r)} (${r.availability.replaceAll("_", " ")})`
-              : runtimeTitle(r),
-          disabled: r.availability !== "available" || !r.configSupported,
-        }));
-    const hostNote = loadingStatus
-      ? "Loading host harnesses…"
-      : status?.availability && status.availability !== "current"
-        ? `Host status is ${status.availability}.`
-        : status && !runtimes.length
-          ? "No supported harnesses were found on this host."
-          : "";
-    const note = cfg.frozen
-      ? cfg.applied
-        ? cfg.statusMessage || ""
-        : obsPermits
+    useEffect(() => {
+      if (!expiresAt) return;
+      const timer = window.setTimeout(
+        () => setClock(Date.now()),
+        Math.max(0, expiresAt * 1000 - Date.now()),
+      );
+      return () => window.clearTimeout(timer);
+    }, [expiresAt]);
+    const expired = Boolean(
+      expiresAt && expiresAt * 1000 <= Math.max(clock, Date.now()),
+    );
+    const readiness = readinessMessage(observation);
+    const models =
+      revision &&
+      !error &&
+      !readiness &&
+      observation?.models.state === "available"
+        ? observation.models.catalog.models
+        : [];
+    const chosenModel = models.find((m) => m.id === cfg.modelId);
+    const note =
+      error ||
+      (expired
+        ? chosenModel
           ? ""
-          : readinessMessage(obs, cfg.statusMessage)
-      : hostNote;
-
+          : "Host information expired. Refresh to load current models."
+        : !status
+          ? "Loading host harnesses…"
+          : status.availability !== "current"
+            ? `Host status is ${status.availability}.`
+            : !status.runtimes.length
+              ? "No harnesses were reported on this host."
+              : revision && !observation
+                ? "Loading host models…"
+                : readiness);
+    useLayoutEffect(() => {
+      onReadyChange?.(Boolean(chosenModel));
+    }, [onReadyChange, chosenModel]);
     return (
       <div className="grid gap-3">
         <SettingsGroup>
@@ -264,83 +223,81 @@ export function createRegisteredHostType(
                 variant="compact"
                 align="end"
                 value={cfg.runtimeId}
-                placeholder={loadingStatus ? "Loading…" : "Choose a harness"}
-                disabled={
-                  disabled ||
-                  Boolean(cfg.frozen) ||
-                  loadingStatus ||
-                  harnessOpts.length === 0
-                }
-                groups={[{ label: "Host", options: harnessOpts }]}
+                placeholder={!status ? "Loading…" : "Choose a harness"}
+                disabled={disabled || !status?.runtimes.length || expired}
+                groups={[
+                  {
+                    label: "Host",
+                    options: (status?.runtimes ?? []).map((r) => ({
+                      value: r.runtimeId,
+                      label: runtimeTitle(r),
+                      disabled:
+                        r.availability !== "available" || !r.configSupported,
+                    })),
+                  },
+                ]}
                 onValueChange={(runtimeId) => {
-                  const found = runtimes.find((r) => r.runtimeId === runtimeId);
+                  const found = status?.runtimes.find(
+                    (r) => r.runtimeId === runtimeId,
+                  );
                   const { harnessId: _, ...rest } = cfg;
+                  setObservation(undefined);
                   onChange({
                     ...rest,
                     runtimeId,
                     ...(found?.harnessId ? { harnessId: found.harnessId } : {}),
                     modelId: "",
-                    effort: "",
                   });
                 }}
               />
             }
           />
-          {cfg.frozen && (
-            <>
-              <ModelFamilyMenu
-                label="Model"
-                align="end"
-                selected={{
-                  id: chosenModel?.id ?? "",
-                  label: chosenModel
-                    ? (chosenModel.name ?? chosenModel.id)
-                    : "Choose a model",
-                }}
-                models={(obs?.models ?? []).map((m) => ({
-                  id: m.id,
-                  label: m.name ?? m.id,
-                  ...(m.description ? { description: m.description } : {}),
-                }))}
-                disabled={disabled || refreshing || !obsPermits}
-                onChange={(modelId) => onChange({ ...cfg, modelId })}
-              />
-              {supportsEffort(cfg.harnessId, cfg.runtimeId) && (
-                <PreferenceRow
-                  title="Thinking"
-                  trailing={
-                    <Select
-                      label="Thinking"
-                      variant="compact"
-                      align="end"
-                      value={cfg.effort}
-                      placeholder="Default"
-                      disabled={
-                        disabled || refreshing || !obsPermits || !chosenModel
-                      }
-                      groups={[{ label: "", options: [...EFFORT_OPTIONS] }]}
-                      onValueChange={(effort) => onChange({ ...cfg, effort })}
-                    />
-                  }
-                />
-              )}
-            </>
+          {cfg.runtimeId && (
+            <ModelFamilyMenu
+              label="Model"
+              align="end"
+              selected={{
+                id: chosenModel?.id ?? "",
+                label: chosenModel?.name ?? chosenModel?.id ?? "Choose a model",
+              }}
+              models={models.map((m) => ({
+                id: m.id,
+                label: m.name ?? m.id,
+                ...(m.description ? { description: m.description } : {}),
+              }))}
+              disabled={disabled || expired || !models.length}
+              onChange={(modelId) => {
+                if (revision)
+                  onChange({
+                    ...cfg,
+                    modelId,
+                    catalogRevision: revision,
+                    modelsExpireAt: expiresAt,
+                  });
+              }}
+            />
           )}
         </SettingsGroup>
-        {(note || error) && (
+        {note && (
           <p
             role={error ? "alert" : "status"}
             className={`m-0 text-body-sm ${error ? "text-danger" : "text-secondary"}`}
           >
-            {error || note}
+            {note}
           </p>
         )}
-        {cfg.frozen && cfg.pubkey && (
+        {(error ||
+          expired ||
+          (status && note && (!revision || observation))) && (
           <div>
             <Button
-              disabled={disabled || refreshing}
-              loading={refreshing}
-              onClick={() => refreshSetup(true)}
+              disabled={disabled}
+              onClick={() => {
+                setStatus(undefined);
+                setObservation(undefined);
+                onChange({ ...cfg, modelId: "" });
+                setError("");
+              }}
             >
               Refresh
             </Button>
@@ -376,7 +333,7 @@ export function createRegisteredHostType(
         <AgentInstructions
           creation
           value={cfg.instructions}
-          disabled={disabled || Boolean(cfg.frozen)}
+          disabled={disabled}
           onChange={(instructions) => onChange({ ...cfg, instructions })}
         />
       );
@@ -411,57 +368,56 @@ export function createRegisteredHostType(
       },
     ],
     remote: {
-      idempotentProvision: true,
+      async validateRetry(saved, next, signal) {
+        const retained = saved as HostedAgentConfig | undefined;
+        const draft = await currentChoice(next, signal);
+        if (
+          !retained ||
+          retained.host !== draft.host ||
+          retained.generation !== draft.generation ||
+          retained.runtimeId !== draft.runtimeId ||
+          retained.instructions !== draft.instructions ||
+          (retained.modelId && retained.modelId !== draft.modelId)
+        )
+          throw new Error(
+            "This unfinished agent is bound to its original host, harness, model and instructions.",
+          );
+      },
       async provision({ name, picture, config, signal }) {
-        const cfg = (config ?? EMPTY_HOSTED_CONFIG) as HostedAgentConfig;
-        if (!cfg.host || !cfg.generation || !cfg.runtimeId)
-          throw new Error("Choose a host and harness first.");
+        const cfg = await currentChoice(config, signal);
         return hosts.provision(
           {
             host: cfg.host,
             generation: cfg.generation,
             runtimeId: cfg.runtimeId,
             name,
-            ...defined({
-              picture,
-              instructions: cfg.instructions,
-              effort: cfg.effort,
-            }),
+            ...(picture ? { picture } : {}),
+            ...(cfg.instructions ? { instructions: cfg.instructions } : {}),
           },
           signal,
         );
       },
       async activate({ pubkey, name, auth, config, signal }) {
-        const cfg = (config ?? EMPTY_HOSTED_CONFIG) as HostedAgentConfig;
-        const outcome = await hosts.activate(
+        const cfg = config as HostedAgentConfig | undefined;
+        if (!cfg?.host || !cfg.generation || !cfg.runtimeId)
+          throw new Error(
+            "The saved host placement is incomplete. Remove the unfinished agent before creating it again.",
+          );
+        await hosts.activate(
           {
             pubkey,
             name,
             nipOa: auth,
-            ...defined({
-              host: cfg.host,
-              generation: cfg.generation,
-              runtimeId: cfg.runtimeId,
-              modelId: cfg.modelId,
-              effort: cfg.effort,
-            }),
+            host: cfg.host,
+            generation: cfg.generation,
+            runtimeId: cfg.runtimeId,
+            modelId: cfg.modelId,
+            ...(cfg.catalogRevision
+              ? { catalogRevision: cfg.catalogRevision }
+              : {}),
           },
           signal,
         );
-        if (outcome.status === "applied") return;
-        return {
-          status: "incomplete",
-          reason: outcome.message,
-          config: {
-            ...cfg,
-            pubkey,
-            frozen: true,
-            ...(outcome.observation
-              ? { observation: outcome.observation }
-              : {}),
-            statusMessage: outcome.message,
-          } satisfies HostedAgentConfig,
-        };
       },
       profile: ({ pubkey, name, picture, signal }) =>
         hosts.profile(

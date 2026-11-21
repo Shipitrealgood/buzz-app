@@ -7,9 +7,8 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use buzz_core::{
     harness::{AcpAvailabilityStatus, Readiness},
     host_deployment::{
-        observation::{Models, Observation, UnavailableReason},
-        wire, Action, Authority, Availability, Capability, Command, Deploy, ModelSelection,
-        Status as HostStatus,
+        observation::Models, wire, Action, Authority, Availability, Capability, Command, Deploy,
+        ModelSelection, Status as HostStatus,
     },
     paired_message::{Policy, Scope},
     private_managed_agent::{validate_auth_tag, PrivateIdentity},
@@ -22,7 +21,7 @@ use buzz_paired_owner::{registry::Registry, Device};
 use buzz_ws_client::{HeaderMap, NostrWsConnection};
 use nostr_registry::{EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
@@ -32,7 +31,6 @@ use tauri::Manager;
 
 const POLL_WAIT: Duration = Duration::from_millis(250);
 const POLL_TRIES: usize = 40;
-const CHOOSE_MODEL: &str = "Choose a model on this host to finish setup";
 static LOCKS: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
 
@@ -106,39 +104,26 @@ pub(crate) struct ActivateInput {
     pub(crate) generation: Option<String>,
     pub(crate) runtime_id: Option<String>,
     pub(crate) model_id: Option<String>,
+    pub(crate) catalog_revision: Option<String>,
     pub(crate) effort: Option<String>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct HostModelView {
-    pub(crate) id: String,
-    pub(crate) name: Option<String>,
-    pub(crate) description: Option<String>,
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct HostObservationView {
+pub(crate) struct HostModelsView {
     pub(crate) expires_at: u64,
-    pub(crate) readiness: Option<Readiness>,
-    pub(crate) availability: Option<AcpAvailabilityStatus>,
-    pub(crate) models_state: &'static str,
-    pub(crate) unavailable_reason: Option<UnavailableReason>,
-    pub(crate) models: Vec<HostModelView>,
+    pub(crate) readiness: Readiness,
+    pub(crate) availability: AcpAvailabilityStatus,
+    pub(crate) models: Models,
 }
-#[derive(Debug, Serialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
-pub(crate) enum ActivateResult {
-    Applied {
-        pubkey: String,
-        unit: Option<String>,
-        revision: u64,
-    },
-    NeedsSetup {
-        pubkey: String,
-        state: String,
-        observation: Option<Box<HostObservationView>>,
-        message: String,
-    },
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelsInput {
+    community: String,
+    owner: String,
+    host: String,
+    generation: String,
+    runtime_id: String,
+    catalog_revision: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -178,32 +163,6 @@ fn project_status(st: &HostStatus) -> HostCatalogView {
         catalog_revision,
         expires_at: st.expires_at,
         runtimes,
-    }
-}
-
-fn project_obs(o: &Observation) -> HostObservationView {
-    let (models_state, unavailable_reason, cat) = match &o.models {
-        Models::Available { catalog } => ("available", None, Some(catalog)),
-        Models::Empty => ("empty", None, None),
-        Models::Unavailable { reason } => ("unavailable", Some(reason.clone()), None),
-        Models::Unsupported => ("unsupported", None, None),
-    };
-    HostObservationView {
-        expires_at: o.expires_at,
-        readiness: o.readiness,
-        availability: o.availability.clone(),
-        models_state,
-        unavailable_reason,
-        models: cat.map_or_else(Vec::new, |c| {
-            c.models
-                .iter()
-                .map(|m| HostModelView {
-                    id: m.id.clone(),
-                    name: m.name.clone(),
-                    description: m.description.clone(),
-                })
-                .collect()
-        }),
     }
 }
 
@@ -362,28 +321,6 @@ fn require_active_host(d: &Device, s: &Session<'_>, host: &str, gen: &str) -> Re
     Ok(scope)
 }
 
-fn obs_of(op: &Operation) -> Option<&Observation> {
-    op.body.as_ref()?.observation.as_ref()
-}
-fn obs_fresh(op: &Operation) -> bool {
-    obs_of(op).is_some_and(|o| o.expires_at > now_secs().unwrap_or(u64::MAX))
-}
-fn setup_res(pk: &str, op: &Operation, msg: &str) -> ActivateResult {
-    ActivateResult::NeedsSetup {
-        pubkey: pk.into(),
-        state: op.state.clone(),
-        observation: obs_of(op).map(|o| Box::new(project_obs(o))),
-        message: msg.into(),
-    }
-}
-fn applied_res(pk: &str, op: &Operation) -> ActivateResult {
-    ActivateResult::Applied {
-        pubkey: pk.into(),
-        unit: op.unit.clone(),
-        revision: op.revision.unwrap_or(1),
-    }
-}
-
 struct OpCtx<'a, 'b> {
     s: &'a Session<'b>,
     d: &'a mut Device,
@@ -420,50 +357,17 @@ impl<'a, 'b> OpCtx<'a, 'b> {
         self.m.dispatch(self.d, &|| self.s.keys(), id).await?;
         self.poll_op(id).await
     }
-    async fn continue_with(
-        &mut self,
-        r: &Reservation,
-        prev: &str,
-        model: ModelSelection,
-        effort: Option<Option<String>>,
-    ) -> Result<(String, Operation)> {
-        let (st, _) = self.permitted_status(r).await?;
-        let c = &self.s.community;
-        let intent = self
-            .d
-            .deployment_intent(c, &self.k, prev)?
-            .context("missing intent")?;
-        let mut snap = self.d.restore_materialization(c, &self.k, &intent)?;
-        if let ModelSelection::Selected { ref id } = model {
-            snap["record"]["model"] = id.clone().into();
-            snap["record"]["effort"] = effort
-                .as_ref()
-                .and_then(|e| e.as_deref())
-                .map_or(Value::Null, Into::into);
-        }
-        let req = ContinueDeploy {
-            previous: prev,
-            status: &st,
-            model,
-            effort,
-            snapshot: snap,
-        };
-        let next = self
-            .m
-            .continue_deployment_with_effort(self.d, &|| self.s.keys(), req)
-            .await?;
-        let id = next.protected.authority.operation_id;
-        Ok((id.clone(), self.dispatch_poll(&id).await?))
-    }
     fn finish_applied(
         &mut self,
         id: &str,
         op: &Operation,
         eff: Option<Option<String>>,
-    ) -> Result<Option<ActivateResult>> {
-        if !(op.admitted && op.current && op.state == "applied") {
-            return Ok(None);
-        }
+    ) -> Result<()> {
+        ensure!(
+            op.admitted && op.current && op.state == "applied",
+            "Host agent launch did not complete ({}). Check the host and retry.",
+            op.state
+        );
         let c = self.s.community.as_str();
         if self
             .d
@@ -474,9 +378,13 @@ impl<'a, 'b> OpCtx<'a, 'b> {
         }
         self.d
             .mark_reservation_active(c, &self.k, &self.pk, id, eff)?;
-        Ok(Some(applied_res(&self.pk.to_hex(), op)))
+        Ok(())
     }
-    async fn permitted_status(&mut self, r: &Reservation) -> Result<(HostStatus, String)> {
+    async fn permitted_status(
+        &mut self,
+        r: &Reservation,
+        selected: Option<&str>,
+    ) -> Result<(HostStatus, String)> {
         let st = query_status(self.m, self.s, &r.scope)
             .await?
             .context("Host status is currently unavailable")?;
@@ -487,6 +395,10 @@ impl<'a, 'b> OpCtx<'a, 'b> {
         else {
             bail!("Host does not support agent deployment");
         };
+        ensure!(
+            selected.is_none_or(|id| id == catalog_revision),
+            "Host catalog changed. Refresh and choose a model."
+        );
         let rev = catalog_revision.clone();
         st.permits(&r.scope, &rev, &r.runtime_id, now_secs()?)?;
         Ok((st, rev))
@@ -548,7 +460,7 @@ pub(super) async fn activate_inner(
     m: &mut Management,
     i: ActivateInput,
     kind0_ws: Option<&str>,
-) -> Result<ActivateResult> {
+) -> Result<()> {
     let (k, pk) = (s.keys()?, PublicKey::from_hex(&i.pubkey)?);
     ensure!(
         validate_auth_tag(&serde_json::to_string(&i.nip_oa)?, &s.owner, &pk).is_ok(),
@@ -575,23 +487,19 @@ pub(super) async fn activate_inner(
         "Agent placement mismatch"
     );
 
+    let model = i.model_id.as_deref().filter(|id| !id.trim().is_empty());
+    if init.state == Reserved {
+        ensure!(model.is_some(), "Choose a current host model in Create agent using this agent’s original name and harness.");
+    }
     let res = d.bind_reservation_attestation(&s.community, &k, &pk, i.nip_oa.to_vec())?;
     publish_profile(s, d, &res, kind0_ws).await?;
     let mut ctx = OpCtx { s, d, m, k, pk };
 
-    if res.state == Active {
-        let op = ctx
-            .read_op(res.operation_id.as_deref().context("missing op")?)
-            .await?;
-        ensure!(
-            op.admitted && op.current && op.state == "applied",
-            "Active host placement is no longer applied"
-        );
-        return Ok(applied_res(&i.pubkey, &op));
-    }
     if res.state == Reserved {
         ensure!(res.operation_id.is_none(), "unexpected operation");
-        let (st, rev) = ctx.permitted_status(&res).await?;
+        let (st, rev) = ctx
+            .permitted_status(&res, i.catalog_revision.as_deref())
+            .await?;
         let (nsec, oa, c) = (
             res.agent_nsec.as_ref().context("missing key")?,
             res.nip_oa.as_ref().context("missing attestation")?,
@@ -607,7 +515,9 @@ pub(super) async fn activate_inner(
                     respond_to_allowlist: c.respond_to_allowlist.clone(),
                     channel_add_policy: c.channel_add_policy.clone(),
                 },
-                model: ModelSelection::PendingLogin {},
+                model: ModelSelection::Selected {
+                    id: model.context("Missing selected model")?.into(),
+                },
                 provider: None,
                 system_prompt: c.instructions.clone(),
                 effort: c.effort.clone(),
@@ -618,7 +528,7 @@ pub(super) async fn activate_inner(
                 auth_tag: Some(serde_json::to_string(oa)?),
             },
         };
-        let snap = json!({ "record": { "pubkey": res.agent.to_hex(), "name": res.name_scope, "runtime_id": res.runtime_id, "model": Value::Null, "effort": c.effort } });
+        let snap = json!({ "record": { "pubkey": res.agent.to_hex(), "name": res.name_scope, "runtime_id": res.runtime_id, "model": model, "effort": c.effort } });
         let auth = Authority {
             v: 1,
             scope: res.scope.clone(),
@@ -634,120 +544,73 @@ pub(super) async fn activate_inner(
             .prepare_deployment(&ctx.s.community, &ctx.k, auth, &cmd, &st, snap)?;
         let op_id = intent.protected.authority.operation_id;
         let op = ctx.dispatch_poll(&op_id).await?;
-        return Ok(ctx
-            .finish_applied(&op_id, &op, None)?
-            .unwrap_or_else(|| setup_res(&i.pubkey, &op, CHOOSE_MODEL)));
+        return ctx.finish_applied(&op_id, &op, None);
     }
 
-    let op_id = res.operation_id.clone().context("missing operation")?;
-    let mut op = ctx.read_op(&op_id).await?;
+    let op_id = res.operation_id.as_deref().context("missing operation")?;
     let prior = ctx
         .d
-        .deployment_intent(&ctx.s.community, &ctx.k, &op_id)?
+        .deployment_intent(&ctx.s.community, &ctx.k, op_id)?
         .context("missing intent")?;
-    if i.model_id.is_none()
-        && !op.admitted
-        && prior.phase == 2
-        && prior.protected.authority.expires_at > now_secs()?
-    {
-        ctx.m.dispatch(ctx.d, &|| ctx.s.keys(), &op_id).await?;
-        op = ctx.poll_op(&op_id).await?;
+    let mut snapshot = ctx
+        .d
+        .restore_materialization(&ctx.s.community, &ctx.k, &prior)?;
+    let retained_model = snapshot["record"]["model"].as_str();
+    let mut op = ctx.read_op(op_id).await?;
+    if res.state == Active {
+        ensure!(
+            op.admitted && op.current && op.state == "applied",
+            "Active host placement is no longer applied"
+        );
+        ensure!(
+            model.is_none_or(|id| Some(id) == retained_model),
+            "This agent already launched with its original model."
+        );
+        return Ok(());
+    }
+    if !op.admitted && prior.phase == 2 && prior.protected.authority.expires_at > now_secs()? {
+        ensure!(retained_model.is_some() && model == retained_model,
+            "The retained deployment has a different model. Retry the original selection or remove the unfinished agent.");
+        ctx.m.dispatch(ctx.d, &|| ctx.s.keys(), op_id).await?;
+        op = ctx.poll_op(op_id).await?;
     } else if op.state == "pending" {
-        op = ctx.poll_op(&op_id).await?;
+        op = ctx.poll_op(op_id).await?;
     }
-    if let Some(app) =
-        ctx.finish_applied(&op_id, &op, i.model_id.as_ref().map(|_| i.effort.clone()))?
-    {
-        return Ok(app);
+    // A reply can be lost after launch. Finish the retained identity and exact
+    // command before considering any same-identity recovery.
+    if op.state == "applied" || op.state == "pending" {
+        ensure!(
+            model.is_none_or(|id| Some(id) == retained_model),
+            "This agent already has a retained model. Retry the original selection."
+        );
+        return ctx.finish_applied(op_id, &op, None);
     }
-    let Some(model_id) = i.model_id else {
-        if op.state == "pending"
-            || (op.admitted && op.current && op.state == "needs-login" && obs_fresh(&op))
-        {
-            return Ok(setup_res(&i.pubkey, &op, CHOOSE_MODEL));
-        }
-        let (_, next) = ctx
-            .continue_with(&res, &op_id, ModelSelection::PendingLogin {}, None)
-            .await?;
-        return Ok(setup_res(&i.pubkey, &next, CHOOSE_MODEL));
-    };
-
-    let (fid, settled) = ctx
-        .continue_with(
-            &res,
-            &op_id,
-            ModelSelection::Selected { id: model_id },
-            Some(i.effort.clone()),
+    let model = model.context(
+        "Choose a current host model in Create agent using this agent’s original name and harness.",
+    )?;
+    let (st, _) = ctx
+        .permitted_status(&res, i.catalog_revision.as_deref())
+        .await?;
+    ensure!(op.admitted && op.current, "The previous deployment is no longer current. Remove the unfinished agent before starting again.");
+    snapshot["record"]["model"] = model.into();
+    snapshot["record"]["effort"] = json!(i.effort);
+    let next = ctx
+        .m
+        .continue_deployment_with_effort(
+            ctx.d,
+            &|| ctx.s.keys(),
+            ContinueDeploy {
+                previous: op_id,
+                status: &st,
+                model: ModelSelection::Selected { id: model.into() },
+                effort: Some(i.effort.clone()),
+                snapshot,
+            },
         )
         .await?;
-    if let Some(app) = ctx.finish_applied(&fid, &settled, Some(i.effort))? {
-        return Ok(app);
-    }
-    ensure!(
-        settled.state == "needs-login",
-        "Host agent launch did not complete ({})",
-        settled.state
-    );
-    Ok(setup_res(
-        &i.pubkey,
-        &settled,
-        "Host requires login or a refreshed model choice",
-    ))
-}
-
-pub(super) async fn setup_state_inner(
-    s: &Session<'_>,
-    d: &mut Device,
-    m: &mut Management,
-    pk_hex: &str,
-    refresh: bool,
-) -> Result<ActivateResult> {
-    let mut ctx = OpCtx {
-        s,
-        d,
-        m,
-        k: s.keys()?,
-        pk: PublicKey::from_hex(pk_hex)?,
-    };
-    let res = ctx
-        .d
-        .reservation(&ctx.s.community, &ctx.k, &ctx.pk)?
-        .context("Agent reservation not found")?;
-    ensure!(
-        !matches!(res.state, Retiring | Retired),
-        "Agent reservation has been retired"
-    );
-    if res.state == Reserved {
-        return Ok(ActivateResult::NeedsSetup {
-            pubkey: pk_hex.into(),
-            state: "reserved".into(),
-            observation: None,
-            message: "Prepare this host agent to load available models".into(),
-        });
-    }
-    let op_id = res.operation_id.clone().context("missing operation")?;
-    let op = ctx.read_op(&op_id).await?;
-    if res.state == Active || (op.admitted && op.current && op.state == "applied") {
-        if res.state == Prepared {
-            ctx.d
-                .mark_reservation_active(&ctx.s.community, &ctx.k, &ctx.pk, &op_id, None)?;
-        }
-        return Ok(applied_res(pk_hex, &op));
-    }
-    if !refresh && obs_fresh(&op) && op.state == "needs-login" {
-        return Ok(setup_res(pk_hex, &op, CHOOSE_MODEL));
-    }
-    if refresh && res.state == Prepared && op.state != "pending" {
-        let (_, next) = ctx
-            .continue_with(&res, &op_id, ModelSelection::PendingLogin {}, None)
-            .await?;
-        return Ok(setup_res(pk_hex, &next, "Host observation refreshed"));
-    }
-    Ok(setup_res(
-        pk_hex,
-        &op,
-        "Refresh host models to continue setup",
-    ))
+    let next_id = next.protected.authority.operation_id;
+    let settled = ctx.dispatch_poll(&next_id).await?;
+    ctx.finish_applied(&next_id, &settled, Some(i.effort))
 }
 
 pub(super) async fn profile_inner(
@@ -904,11 +767,29 @@ pub(crate) async fn registered_host_status<R: tauri::Runtime>(
     host: String,
     generation: String,
 ) -> Result<HostCatalogView, String> {
-    with_dev((&app, &identity), &owner, &community, None, async |s, d| {
-        let scope = require_active_host(d, s, &host, &generation)?;
-        with_mgmt(s, &fi, async |m| status_inner(s, m, &scope).await).await
-    })
-    .await
+    let s = Session::capture(&identity, owner, community)
+        .await
+        .map_err(|e| e.to_string())?;
+    let scope = read_scope(&app, &s, &host, &generation).map_err(|e| e.to_string())?;
+    with_mgmt(&s, &fi, async |m| status_inner(&s, m, &scope).await)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// Release the local file lock before independent discovery requests wait for a host.
+fn read_scope<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    s: &Session<'_>,
+    host: &str,
+    generation: &str,
+) -> Result<Scope> {
+    let j = Journal::open(&app.path().app_local_data_dir()?)?;
+    require_active_host(
+        j.device.as_ref().context(super::UNAVAILABLE)?,
+        s,
+        host,
+        generation,
+    )
 }
 #[tauri::command]
 pub(crate) async fn registered_host_provision<R: tauri::Runtime>(
@@ -928,7 +809,7 @@ pub(crate) async fn registered_host_activate<R: tauri::Runtime>(
     identity: tauri::State<'_, IdentityHost>,
     fi: tauri::State<'_, FederatedIdentity>,
     input: ActivateInput,
-) -> Result<ActivateResult, String> {
+) -> Result<(), String> {
     let (o, c, p) = (
         input.owner.clone(),
         input.community.clone(),
@@ -940,28 +821,37 @@ pub(crate) async fn registered_host_activate<R: tauri::Runtime>(
     .await
 }
 #[tauri::command]
-pub(crate) async fn registered_host_setup_state<R: tauri::Runtime>(
+pub(crate) async fn registered_host_models<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     identity: tauri::State<'_, IdentityHost>,
     fi: tauri::State<'_, FederatedIdentity>,
-    community: String,
-    owner: String,
-    pubkey: String,
-    refresh: bool,
-) -> Result<ActivateResult, String> {
-    with_dev(
-        (&app, &identity),
-        &owner,
-        &community,
-        Some(&pubkey),
-        async |s, d| {
-            with_mgmt(s, &fi, async |m| {
-                setup_state_inner(s, d, m, &pubkey, refresh).await
+    input: ModelsInput,
+) -> Result<HostModelsView, String> {
+    let read = async {
+        let s = Session::capture(&identity, input.owner, input.community).await?;
+        let scope = read_scope(&app, &s, &input.host, &input.generation)?;
+        s.with_registry(&fi, async |registry| {
+            // The signed request has a 60-second lifetime. Never extend it in the UI.
+            let expires = now_secs()? + 60;
+            let models = registry
+                .models(
+                    &|| s.keys(),
+                    &scope,
+                    &input.runtime_id,
+                    &input.catalog_revision,
+                )
+                .await?;
+            Ok(HostModelsView {
+                expires_at: expires,
+                models: models.models,
+                readiness: models.readiness,
+                availability: models.availability,
             })
-            .await
-        },
-    )
-    .await
+        })
+        .await?
+        .context("Host model discovery unavailable")
+    };
+    read.await.map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub(crate) async fn registered_host_profile<R: tauri::Runtime>(

@@ -148,7 +148,7 @@ fn main() {
             "registered_host_status",
             "registered_host_provision",
             "registered_host_activate",
-            "registered_host_setup_state",
+            "registered_host_models",
             "registered_host_profile",
             "registered_host_remove",
             "relay_upload_begin",

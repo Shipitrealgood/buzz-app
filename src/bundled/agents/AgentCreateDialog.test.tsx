@@ -1727,443 +1727,269 @@ it("shows an agent card's pack avatar as that Gloopie", () => {
   );
 });
 
-it("slots Run on before Harness, clears stale selections on switch, prepares in-place, and finishes with observed model", async () => {
-  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
-    "./registeredHostType"
-  );
-  const owner = "ab".repeat(32);
-  const community = "https://example.org";
-  const hostA = {
-    owner,
-    community,
-    host: "cd".repeat(32),
-    generation: "ef".repeat(32),
-    label: "Netcup",
-    registration: "registered" as const,
-    availability: "unavailable" as const,
-  };
-  const hostB = {
-    owner,
-    community,
-    host: "12".repeat(32),
-    generation: "34".repeat(32),
-    label: "Backup",
-    registration: "registered" as const,
-    availability: "unavailable" as const,
-  };
-  const pubkey = "99".repeat(32);
-  const hostsClient = {
-    recover: vi.fn(),
-    status: vi.fn(async ({ host }: { host: string }) => ({
-      availability: "current" as const,
-      catalogRevision: "aa".repeat(32),
-      expiresAt: Math.floor(Date.now() / 1000) + 120,
-      runtimes: [
-        {
-          runtimeId: host === hostA.host ? "acp/claude" : "acp/codex",
-          harnessId: host === hostA.host ? "claude" : "codex",
-          availability: "available" as const,
-          version: "1.0.0",
-          configSupported: true,
-        },
-      ],
-    })),
-    provision: vi.fn(),
-    activate: vi.fn(),
-    setupState: vi.fn(),
-    profile: vi.fn(),
-    remove: vi.fn(),
-  };
-  const localNotes = {
-    ...notes,
-    carry: (config: Notes) => ({ instructions: config.instructions }),
-  } as unknown as RegisteredAgentType;
-  const hostedType = {
-    ...createRegisteredHostType(hostsClient),
-    key: REGISTERED_HOST_TYPE_KEY,
-    pluginId: "buzz.agents",
-    revision: "1",
-  } as unknown as RegisteredAgentType;
-
-  const unfinishedAgent: Agent = {
-    key: pubkey,
-    pubkey,
-    name: "Netcup Agent",
-    type: REGISTERED_HOST_TYPE_KEY,
-    owner,
-    relay: "wss://example.org",
-    place: "hosted",
-    unfinished: true,
-    attention: {},
-    skipped: {},
-    timers: {},
-    attentionEnabled: false,
-    config: {
-      host: hostA.host,
-      generation: hostA.generation,
-      hostLabel: "Netcup",
-      runtimeId: "acp/claude",
-      harnessId: "claude",
-      instructions: "Carry me",
-      modelId: "",
-      effort: "",
-      pubkey,
-      frozen: true,
-      observation: {
-        expiresAt: Math.floor(Date.now() / 1000) + 120,
-        readiness: "logged-in",
-        availability: "available",
-        modelsState: "available",
-        unavailableReason: null,
-        models: [
-          { id: "claude-sonnet", name: "Claude Sonnet", description: null },
-        ],
-      },
-    },
-  };
-  const { unfinished: _drop, ...finishedBase } = unfinishedAgent;
-  const finishedAgent: Agent = finishedBase;
-  const agents = {
-    create: vi.fn(async () => unfinishedAgent),
-    finish: vi.fn(async () => finishedAgent),
-  } as unknown as Agents & {
-    create: ReturnType<typeof vi.fn>;
-    finish: ReturnType<typeof vi.fn>;
-  };
-  const onCreated = vi.fn();
-
-  render(
-    <AgentCreateDialog
-      agents={agents}
-      types={[localNotes, echo, hostedType]}
-      loadRegisteredHosts={async () => [hostA, hostB]}
-      onClose={vi.fn()}
-      onCreated={onCreated}
-    />,
-  );
-  const user = userEvent.setup();
-  const dialog = screen.getByRole("dialog", { name: "Create agent" });
-
-  // Local Harness list hides internal Registered host type.
-  await user.click(within(dialog).getByRole("combobox", { name: "Harness" }));
-  expect(
-    screen.queryByRole("option", { name: /Registered host/i }),
-  ).not.toBeInTheDocument();
-  await user.keyboard("{Escape}");
-
-  // Type instructions on local harness, then switch Run on to Netcup.
-  await user.type(within(dialog).getByLabelText("Name"), "Netcup Agent");
-  const instructionsInput = within(dialog).getByLabelText("Instructions");
-  await user.clear(instructionsInput);
-  await user.type(instructionsInput, "Carry me");
-  const runOnBox = await within(dialog).findByRole("combobox", {
-    name: "Run on",
-  });
-  await user.click(runOnBox);
-  await user.click(await screen.findByRole("option", { name: "Netcup" }));
-  expect(within(dialog).getByLabelText(/^Instructions/i)).toHaveValue(
-    "Carry me",
-  );
-
-  // Host Harness loads Netcup's Claude runtime.
-  await waitFor(() =>
-    expect(hostsClient.status).toHaveBeenCalledWith(
-      { host: hostA.host, generation: hostA.generation },
-      expect.any(AbortSignal),
-    ),
-  );
-  await user.click(within(dialog).getByRole("combobox", { name: "Harness" }));
-  await user.click(await screen.findByRole("option", { name: "Claude" }));
-
-  // Switch Run on to Backup before freeze -> clears stale Claude runtime.
-  await user.click(within(dialog).getByRole("combobox", { name: "Run on" }));
-  await user.click(await screen.findByRole("option", { name: "Backup" }));
-  await waitFor(() =>
-    expect(hostsClient.status).toHaveBeenCalledWith(
-      { host: hostB.host, generation: hostB.generation },
-      expect.any(AbortSignal),
-    ),
-  );
-  await user.click(within(dialog).getByRole("combobox", { name: "Run on" }));
-  await user.click(await screen.findByRole("option", { name: "Netcup" }));
-  await user.click(within(dialog).getByRole("combobox", { name: "Harness" }));
-  await user.click(await screen.findByRole("option", { name: "Claude" }));
-
-  // Prepare -> RemoteAgentIntroduction -> agents.create -> transitions in-place to frozen setup.
-  await user.click(createButton());
-  await user.click(await screen.findByRole("button", { name: "Let’s go" }));
-  await waitFor(() =>
-    expect(
-      screen.getByRole("dialog", { name: "Finish Netcup Agent" }),
-    ).toBeInTheDocument(),
-  );
-  expect(onCreated).not.toHaveBeenCalled();
-
-  const finishDialog = screen.getByRole("dialog", {
-    name: "Finish Netcup Agent",
-  });
-  expect(within(finishDialog).getByLabelText("Name")).toBeDisabled();
-  expect(
-    within(finishDialog).getByRole("combobox", { name: "Run on" }),
-  ).toBeDisabled();
-  expect(
-    within(finishDialog).getByRole("combobox", { name: "Harness" }),
-  ).toBeDisabled();
-  expect(within(finishDialog).getByLabelText(/^Instructions/i)).toBeDisabled();
-
-  // Select observed model (no Custom model item) and conditional Thinking level.
-  await user.click(
-    within(finishDialog).getByRole("button", { name: /Model:/i }),
-  );
-  expect(
-    screen.queryByRole("menuitem", { name: "Custom model" }),
-  ).not.toBeInTheDocument();
-  (await screen.findByRole("menuitem", { name: "Claude" })).focus();
-  await user.keyboard("{ArrowRight}");
-  await user.click(
-    await screen.findByRole("menuitemradio", { name: "Claude Sonnet" }),
-  );
-  await user.click(
-    within(finishDialog).getByRole("combobox", { name: "Thinking" }),
-  );
-  await user.click(await screen.findByRole("option", { name: "High" }));
-
-  await user.click(
-    within(finishDialog).getByRole("button", { name: "Finish setup" }),
-  );
-  expect(agents.finish).toHaveBeenCalledWith(pubkey, {
-    config: expect.objectContaining({
-      modelId: "claude-sonnet",
-      effort: "high",
-    }),
-  });
-  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(finishedAgent));
+const hostModels = (
+  id: string,
+  expiresAt = Math.floor(Date.now() / 1000) + 60,
+) => ({
+  expiresAt,
+  readiness: "logged-in" as const,
+  availability: "available" as const,
+  models: {
+    state: "available" as const,
+    catalog: { models: [{ id, name: id, description: null }] },
+  },
 });
 
-it("completes reopened unfinished hosted agent when setupState returns applied", async () => {
+async function hostedForm() {
   const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
     "./registeredHostType"
   );
-  const pubkey = "88".repeat(32);
-  const owner = "ab".repeat(32);
-  const setupState = vi.fn(async () => ({
-    status: "applied" as const,
-    pubkey,
-    unit: "buzz-agent@1",
-    revision: 2,
-  }));
-  const hostedType = {
-    ...createRegisteredHostType({
-      recover: vi.fn(),
-      status: vi.fn(),
-      provision: vi.fn(),
-      activate: vi.fn(),
-      setupState,
-      profile: vi.fn(),
-      remove: vi.fn(),
-    }),
-    key: REGISTERED_HOST_TYPE_KEY,
-    pluginId: "buzz.agents",
-    revision: "1",
-  } as unknown as RegisteredAgentType;
-  const unfinished: Agent = {
-    key: pubkey,
-    pubkey,
-    name: "Applied Host",
-    type: REGISTERED_HOST_TYPE_KEY,
-    owner,
-    place: "hosted",
-    relay: "wss://example.org",
-    unfinished: true,
-    attention: {},
-    skipped: {},
-    timers: {},
-    attentionEnabled: false,
-    config: {
-      host: "cd".repeat(32),
-      generation: "ef".repeat(32),
-      hostLabel: "Netcup",
-      runtimeId: "acp/claude",
-      harnessId: "claude",
-      instructions: "",
-      modelId: "",
-      effort: "",
-      pubkey,
-      frozen: true,
-    },
-  };
-  const { unfinished: _d, ...done } = unfinished;
-  const finished: Agent = done;
-  const agents = {
-    create: vi.fn(),
-    finish: vi.fn(async () => finished),
-  } as unknown as Agents & { finish: ReturnType<typeof vi.fn> };
-  const onCreated = vi.fn();
-  render(
-    <AgentCreateDialog
-      agents={agents}
-      types={[notes as RegisteredAgentType, hostedType]}
-      unfinished={unfinished}
-      onClose={vi.fn()}
-      onCreated={onCreated}
-    />,
-  );
-
-  await waitFor(() =>
-    expect(setupState).toHaveBeenCalledWith(
-      { pubkey, refresh: false },
-      expect.any(AbortSignal),
-    ),
-  );
-  const btn = await screen.findByRole("button", { name: "Finish setup" });
-  await waitFor(() => expect(btn).toBeEnabled());
-  await userEvent.setup().click(btn);
-  expect(agents.finish).toHaveBeenCalledWith(pubkey, {
-    config: expect.objectContaining({ applied: true }),
-  });
-  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(finished));
-});
-
-it("clears harnessId when switching to a runtime with harnessId: null and hides Thinking", async () => {
-  const { createRegisteredHostType, REGISTERED_HOST_TYPE_KEY } = await import(
-    "./registeredHostType"
-  );
-  const owner = "ab".repeat(32);
-  const hostA = {
-    owner,
+  const placement = {
+    owner: "ab".repeat(32),
     community: "https://example.org",
     host: "cd".repeat(32),
     generation: "ef".repeat(32),
-    label: "Netcup",
+    label: "Example host",
     registration: "registered" as const,
     availability: "unavailable" as const,
   };
-  const hostsClient = {
+  const revision = "aa".repeat(32);
+  const hosts = {
     recover: vi.fn(),
     status: vi.fn(async () => ({
       availability: "current" as const,
-      catalogRevision: "aa".repeat(32),
+      catalogRevision: revision,
       expiresAt: Math.floor(Date.now() / 1000) + 120,
-      runtimes: [
-        {
-          runtimeId: "acp/rt1",
-          harnessId: "claude",
-          availability: "available" as const,
-          version: "1.0.0",
-          configSupported: true,
-        },
-        {
-          runtimeId: "acp/rt2",
-          harnessId: null,
-          availability: "available" as const,
-          version: "1.0.0",
-          configSupported: true,
-        },
-      ],
+      runtimes: ["claude", "codex"].map((id) => ({
+        runtimeId: `acp/${id}`,
+        harnessId: id,
+        availability: "available" as const,
+        version: null,
+        configSupported: true,
+      })),
     })),
+    models:
+      vi.fn<
+        (
+          query: {
+            host: string;
+            generation: string;
+            runtimeId: string;
+            catalogRevision: string;
+          },
+          signal: AbortSignal,
+        ) => Promise<ReturnType<typeof hostModels>>
+      >(),
     provision: vi.fn(),
     activate: vi.fn(),
-    setupState: vi.fn(),
     profile: vi.fn(),
     remove: vi.fn(),
   };
-  const hostedType = {
-    ...createRegisteredHostType(hostsClient),
+  const hosted = {
+    ...createRegisteredHostType(hosts),
     key: REGISTERED_HOST_TYPE_KEY,
     pluginId: "buzz.agents",
     revision: "1",
   } as unknown as RegisteredAgentType;
   const agents = {
-    create: vi.fn(),
-    finish: vi.fn(),
-  } as unknown as Agents;
-  const onCreate = vi.fn(async (_input: NewAgent) => ({
-    key: "77".repeat(32),
-    pubkey: "77".repeat(32),
-    name: "Custom Agent",
-    type: REGISTERED_HOST_TYPE_KEY,
-    owner,
-    place: "hosted" as const,
-    relay: "https://example.org",
-    attention: {},
-    skipped: {},
-    timers: {},
-    attentionEnabled: false,
-    config: undefined,
-  }));
-  const user = userEvent.setup();
-  const { unmount } = render(
-    <AgentCreateDialog
-      agents={agents}
-      types={[notes as RegisteredAgentType, hostedType]}
-      loadRegisteredHosts={async () => [hostA]}
-      onCreate={onCreate}
-      onClose={vi.fn()}
-      onCreated={vi.fn()}
-    />,
-  );
-
-  await user.type(screen.getByPlaceholderText("Name"), "Custom Agent");
-  await user.click(await screen.findByRole("combobox", { name: "Run on" }));
-  await user.click(await screen.findByRole("option", { name: "Netcup" }));
-  const harness = await screen.findByRole("combobox", { name: "Harness" });
-  await waitFor(() => expect(harness).toBeEnabled());
-  await user.click(harness);
-  await user.click(await screen.findByRole("option", { name: "Claude" }));
-  await user.click(harness);
-  await user.click(await screen.findByRole("option", { name: "Rt2" }));
-
-  await user.click(createButton());
-  await user.click(await screen.findByRole("button", { name: "Let’s go" }));
-  await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
-  const submitted = onCreate.mock.calls[0]?.[0]?.config as Record<
-    string,
-    unknown
-  >;
-  expect(submitted.runtimeId).toBe("acp/rt2");
-  expect("harnessId" in submitted).toBe(false);
-  unmount();
-
-  const frozenNullHarness: Agent = {
-    key: "77".repeat(32),
-    pubkey: "77".repeat(32),
-    name: "Custom Agent",
-    type: REGISTERED_HOST_TYPE_KEY,
-    owner,
-    place: "hosted",
-    relay: "https://example.org",
-    unfinished: true,
-    attention: {},
-    skipped: {},
-    timers: {},
-    attentionEnabled: false,
-    config: {
-      ...submitted,
-      pubkey: "77".repeat(32),
-      frozen: true,
-      observation: {
-        expiresAt: Math.floor(Date.now() / 1000) + 120,
-        readiness: "logged-in",
-        availability: "available",
-        modelsState: "available",
-        unavailableReason: null,
-        models: [{ id: "m1", name: "Model 1", description: null }],
-      },
-    },
+    create: vi.fn().mockResolvedValue({ pubkey: "11".repeat(32) }),
   };
-  render(
+  const onClose = vi.fn();
+  const view = render(
     <AgentCreateDialog
-      agents={agents}
-      types={[notes as RegisteredAgentType, hostedType]}
-      unfinished={frozenNullHarness}
-      onClose={vi.fn()}
+      agents={agents as unknown as Agents}
+      types={[notes as RegisteredAgentType, hosted]}
+      loadRegisteredHosts={async () => [
+        placement,
+        {
+          ...placement,
+          host: "12".repeat(32),
+          generation: "34".repeat(32),
+          label: "Backup host",
+        },
+      ]}
+      onClose={onClose}
       onCreated={vi.fn()}
     />,
   );
+  const user = userEvent.setup();
+  const select = async (label: string, option: string) => {
+    await user.click(await screen.findByRole("combobox", { name: label }));
+    await user.click(await screen.findByRole("option", { name: option }));
+  };
+  await user.type(screen.getByLabelText("Name"), "Sky");
+  await select("Run on", "Example host");
+  return { hosts, agents, placement, revision, select, user, view, onClose };
+}
+
+it("uses only the latest harness catalog and creates the selected host model in one click", async () => {
+  const { hosts, agents, placement, revision, select, user } =
+    await hostedForm();
+  let stale!: (v: ReturnType<typeof hostModels>) => void;
+  hosts.models
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          stale = resolve;
+        }),
+    )
+    .mockResolvedValueOnce(hostModels("gpt-current"));
+  await select("Harness", "Claude");
+  await select("Harness", "Codex");
+  expect(hosts.models).toHaveBeenLastCalledWith(
+    {
+      host: placement.host,
+      generation: placement.generation,
+      runtimeId: "acp/codex",
+      catalogRevision: revision,
+    },
+    expect.any(AbortSignal),
+  );
+  expect(hosts.models.mock.calls[0]?.[1].aborted).toBe(true);
+  await act(async () => stale(hostModels("stale-claude")));
+  expect(createButton()).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: /Model:/i }));
   expect(
-    await screen.findByRole("button", { name: /Model:/i }),
-  ).toBeInTheDocument();
+    screen.queryByRole("menuitem", { name: "Claude" }),
+  ).not.toBeInTheDocument();
+  (await screen.findByRole("menuitem", { name: "OpenAI" })).focus();
+  await user.keyboard("{ArrowRight}");
+  await user.click(
+    await screen.findByRole("menuitemradio", { name: "gpt-current" }),
+  );
   expect(
     screen.queryByRole("combobox", { name: "Thinking" }),
   ).not.toBeInTheDocument();
+  expect(agents.create).not.toHaveBeenCalled();
+  expect(hosts.provision).not.toHaveBeenCalled();
+  expect(hosts.activate).not.toHaveBeenCalled();
+  await user.click(createButton());
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  expect(agents.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "buzz.agents/registered-host",
+      name: "Sky",
+      config: expect.objectContaining({
+        host: placement.host,
+        generation: placement.generation,
+        runtimeId: "acp/codex",
+        modelId: "gpt-current",
+        catalogRevision: revision,
+      }),
+    }),
+  );
 });
+
+it("drops discovery after switching back to local or closing the draft, without creating an agent", async () => {
+  const { hosts, agents, select, user, view, onClose } = await hostedForm();
+  const pending: ((v: ReturnType<typeof hostModels>) => void)[] = [];
+  hosts.models.mockImplementation(
+    () => new Promise((resolve) => pending.push(resolve)),
+  );
+  await select("Harness", "Claude");
+  await select("Run on", "This computer");
+  expect(hosts.models.mock.calls[0]?.[1].aborted).toBe(true);
+  await act(async () => pending[0]?.(hostModels("late")));
+  expect(createButton()).toBeEnabled();
+  await select("Run on", "Example host");
+  await select("Harness", "Codex");
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  view.unmount();
+  await act(async () => pending[1]?.(hostModels("late")));
+  expect(hosts.models.mock.calls[1]?.[1].aborted).toBe(true);
+  expect(agents.create).not.toHaveBeenCalled();
+  expect(hosts.provision).not.toHaveBeenCalled();
+  expect(hosts.activate).not.toHaveBeenCalled();
+});
+
+it("requires a fresh host catalog and enables a read-only refresh after expiry", async () => {
+  const { hosts, agents, select, user } = await hostedForm();
+  hosts.models
+    .mockResolvedValueOnce(
+      hostModels("expired", Math.floor(Date.now() / 1000) - 1),
+    )
+    .mockResolvedValueOnce(hostModels("current"));
+  await select("Harness", "Claude");
+  expect(await screen.findByText(/information expired/)).toBeVisible();
+  expect(createButton()).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Model:/i })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /Model:/i })).toBeEnabled(),
+  );
+  expect(hosts.models).toHaveBeenCalledTimes(2);
+  expect(agents.create).not.toHaveBeenCalled();
+});
+
+it("drops a late harness list after switching hosts", async () => {
+  const { hosts, select, user, agents } = await hostedForm();
+  type Status = Awaited<ReturnType<typeof hosts.status>>;
+  const original = await hosts.status.mock.results[0]?.value;
+  if (!original) throw new Error("Expected the first host request");
+  let settle!: (s: Status) => void;
+  hosts.status.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+  );
+  await select("Run on", "Backup host");
+  await select("Run on", "Example host");
+  await act(async () => settle({ ...original, runtimes: [] }));
+  await user.click(screen.getByRole("combobox", { name: "Harness" }));
+  expect(await screen.findByRole("option", { name: "Claude" })).toBeVisible();
+  expect(screen.getByRole("option", { name: "Codex" })).toBeVisible();
+  expect(hosts.models).not.toHaveBeenCalled();
+  expect(agents.create).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  "checks an aged selection on the same Create click before provisioning (still available %s)",
+  async (available) => {
+    const { hosts, agents, select, user } = await hostedForm();
+    const { createRegisteredHostType } = await import("./registeredHostType");
+    const remote = createRegisteredHostType(hosts).remote;
+    if (!remote) throw new Error("Expected a remote provider");
+    const expiry = Math.floor(Date.now() / 1000) + 60;
+    hosts.models
+      .mockResolvedValueOnce(hostModels("gpt-current", expiry))
+      .mockImplementationOnce(async () =>
+        hostModels(available ? "gpt-current" : "replacement"),
+      );
+    agents.create.mockImplementation(async (input: NewAgent) => {
+      await remote.provision({
+        ...input,
+        community: "wss://example.org",
+        signal: new AbortController().signal,
+      });
+      return { pubkey: "11".repeat(32) };
+    });
+    await select("Harness", "Codex");
+    await user.click(screen.getByRole("button", { name: /Model:/i }));
+    (await screen.findByRole("menuitem", { name: "OpenAI" })).focus();
+    await user.keyboard("{ArrowRight}");
+    await user.click(
+      await screen.findByRole("menuitemradio", { name: "gpt-current" }),
+    );
+    const clock = vi.spyOn(Date, "now").mockReturnValue((expiry + 1) * 1000);
+    try {
+      await user.type(screen.getByLabelText("Name"), " agent");
+      expect(createButton()).toBeEnabled();
+      await user.click(createButton());
+      expect(hosts.models).toHaveBeenCalledTimes(2);
+      expect(hosts.models.mock.calls[1]?.[0]).toEqual(
+        hosts.models.mock.calls[0]?.[0],
+      );
+      if (available) expect(hosts.provision).toHaveBeenCalledTimes(1);
+      else {
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          "no longer available",
+        );
+        expect(hosts.provision).not.toHaveBeenCalled();
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  },
+);

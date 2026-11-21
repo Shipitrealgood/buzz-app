@@ -979,8 +979,12 @@ export type AgentType<Config = unknown> = {
  * the owner's agent list; every step is asked again after a failure, so each
  * must be safe to repeat. `community` is the agent's `wss://` community. */
 export type RemoteAgentType = Readonly<{
-  /** True when `provision` is idempotent and enforces placement checks on retry. */
-  idempotentProvision?: boolean;
+  /** Check a replacement draft before updating this provider's retained setup. */
+  validateRetry?(
+    saved: unknown,
+    next: unknown,
+    signal: AbortSignal,
+  ): Promise<void>;
   /** Makes the agent and resolves with its pubkey and the picture it was
    * made with, which a retried creation keeps. Not yet its owner's. */
   provision(
@@ -1005,10 +1009,7 @@ export type RemoteAgentType = Readonly<{
       config?: unknown;
       signal: AbortSignal;
     }>,
-  ): Promise<
-    // biome-ignore lint/suspicious/noConfusingVoidType: allow Promise<void> implementations alongside incomplete setup results.
-    void | Readonly<{ status: "incomplete"; config?: unknown; reason?: string }>
-  >;
+  ): Promise<void>;
   /** Publishes its profile with this name and picture (an HTTPS image URL). */
   profile(
     input: Readonly<{
@@ -1399,10 +1400,7 @@ export type Agents = {
     input: Pick<Team, "name" | "instructions">,
   ): Promise<void>;
   /** Continues an unfinished hosted agent's setup. */
-  finish(
-    pubkey: string,
-    update?: Readonly<{ config?: unknown; picture?: string }>,
-  ): Promise<Agent>;
+  finish(pubkey: string): Promise<Agent>;
   /** Identities earlier agent systems saved on this machine that are not
    * Agents yet, old Buzz's teams with all their members, and which of those
    * members are already in Yours. */
@@ -3394,22 +3392,13 @@ export class AgentsService extends Service implements Agents {
           setup.owner === binding.viewer,
       );
       if (pending) {
-        const frozen =
-          typeof pending.config === "object" &&
-          pending.config !== null &&
-          (pending.config as { frozen?: unknown }).frozen === true;
-        if (remote.idempotentProvision) {
-          const { pubkey } = await remote.provision({
-            name: name.trim(),
-            ...(listed ? { picture: listed } : {}),
-            community: wssOf(binding.origin),
-            ...(config !== undefined ? { config } : {}),
-            signal: binding.controller.signal,
-          });
-          if (pubkey !== pending.pubkey)
-            throw new Error("Pending setup belongs to another agent identity");
-        }
-        if (!frozen && (config !== undefined || listed))
+        if (config !== undefined && remote.validateRetry)
+          await remote.validateRetry(
+            pending.config,
+            config,
+            binding.controller.signal,
+          );
+        if (config !== undefined || listed)
           await this.writeUnfinished(
             this.unfinished.map((setup) =>
               setup === pending
@@ -3744,31 +3733,8 @@ export class AgentsService extends Service implements Agents {
     return this.finish(pubkey);
   }
 
-  finish(
-    pubkey: string,
-    update?: Readonly<{ config?: unknown; picture?: string }>,
-  ) {
-    return this.exclusive(pubkey, async () => {
-      if (update?.config !== undefined || update?.picture !== undefined) {
-        const listed = update.picture
-          ? recordPicture(update.picture)
-          : undefined;
-        await this.writeUnfinished(
-          this.unfinished.map((setup) =>
-            setup.pubkey === pubkey
-              ? {
-                  ...setup,
-                  ...(update.config !== undefined
-                    ? { config: update.config }
-                    : {}),
-                  ...(listed ? { picture: listed } : {}),
-                }
-              : setup,
-          ),
-        );
-      }
-      return this.setUp(pubkey);
-    });
+  finish(pubkey: string) {
+    return this.exclusive(pubkey, () => this.setUp(pubkey));
   }
   private async setUp(pubkey: string) {
     const setup = this.unfinished.find((entry) => entry.pubkey === pubkey);
@@ -3784,7 +3750,7 @@ export class AgentsService extends Service implements Agents {
     const auth = await this.authorize(pubkey, signal);
     if (auth[1] !== setup.owner)
       throw new Error("Sign in as the agent's owner to finish its setup");
-    const outcome = await remote.activate({
+    await remote.activate({
       pubkey,
       name: setup.name,
       community: setup.relay,
@@ -3792,18 +3758,6 @@ export class AgentsService extends Service implements Agents {
       ...(setup.config !== undefined ? { config: setup.config } : {}),
       signal,
     });
-    if (outcome?.status === "incomplete") {
-      if (outcome.config !== undefined)
-        await this.writeUnfinished(
-          this.unfinished.map((entry) =>
-            entry === setup ? { ...entry, config: outcome.config } : entry,
-          ),
-        );
-      const pending = this.find(pubkey);
-      if (!pending)
-        throw new Error("The agent was set up in another community");
-      return pending;
-    }
     const { picture } = setup;
     await this.writeListing(origin, binding, {
       pubkey,
@@ -5717,7 +5671,6 @@ export class AgentsService extends Service implements Agents {
             relay: setup.relay,
             place: "hosted",
             unfinished: true,
-            ...(setup.config !== undefined ? { config: setup.config } : {}),
           }),
         );
     return shown;
@@ -5736,7 +5689,7 @@ export class AgentsService extends Service implements Agents {
       | "unfinished"
       | "protection"
       | "protectionRevision"
-    > & { config?: unknown },
+    >,
   ): Agent {
     const prior = this.shown.get(fields.pubkey);
     if (
@@ -5749,8 +5702,7 @@ export class AgentsService extends Service implements Agents {
       prior.place === fields.place &&
       prior.unfinished === fields.unfinished &&
       prior.protectionRevision === fields.protectionRevision &&
-      prior.protection === fields.protection &&
-      prior.config === fields.config
+      prior.protection === fields.protection
     )
       return prior;
     const agent: Agent = Object.freeze({
@@ -5761,7 +5713,7 @@ export class AgentsService extends Service implements Agents {
       skipped: EMPTY,
       timers: EMPTY,
       attentionEnabled: false,
-      config: fields.config,
+      config: undefined,
     });
     this.shown.set(fields.pubkey, agent);
     return agent;

@@ -774,7 +774,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         relay::registered_hosts::registered_host_status,
         relay::registered_hosts::registered_host_provision,
         relay::registered_hosts::registered_host_activate,
-        relay::registered_hosts::registered_host_setup_state,
+        relay::registered_hosts::registered_host_models,
         relay::registered_hosts::registered_host_profile,
         relay::registered_hosts::registered_host_remove,
         relay_upload_begin,

@@ -7,7 +7,7 @@
     "allow-registered-host-status",
     "allow-registered-host-provision",
     "allow-registered-host-activate",
-    "allow-registered-host-setup-state",
+    "allow-registered-host-models",
     "allow-registered-host-profile",
     "allow-registered-host-remove",
     "allow-huddle-window-reset-incoming",

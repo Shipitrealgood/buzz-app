@@ -831,6 +831,7 @@ available rather than silently discarding it.
   its type. Where offered, **Create agent** also lets people choose Thinking
   before the first config is saved; **Default** follows the provider's setting.
   Do not assume someone can edit another person's agent.
+- On desktop, **Run on** in **Create agent** lists your registered hosts. Choose a host, an installed harness, and a model reported by that harness, then choose **Create agent**. If the model list expires while you are filling out the form, Create checks your selected model again.
 - A desktop plugin can run native Codex or Claude on another computer. The plugin manages the target, workspace, credentials, and expiry. A saved
   remote choice stays remote after an app restart. If the target cannot be
   restored, Buzz shows an error and requires a new session.
