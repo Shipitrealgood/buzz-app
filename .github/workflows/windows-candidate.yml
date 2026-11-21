@@ -21,6 +21,6 @@ jobs:
       id-token: write
     with:
       candidates: true
-      # Verify the GUI from the NSIS payload under a standard Windows user before uploading.
+      # Signed-in TLS recovery passed in Windows run 44921983991. Verify installed IPC as a standard user.
       verify_registered_hosts: true
       preview_version: 1.0.7-preview.${{ github.run_number }}
