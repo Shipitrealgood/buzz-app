@@ -1080,6 +1080,7 @@ dependencies = [
 [[package]]
 name = "buzz-core"
 version = "0.1.0"
+source = "git+https://github.com/Shipitrealgood/buzz.git?rev=0d03b28a3c537409f8a86a30cd1389096ddeb13d#0d03b28a3c537409f8a86a30cd1389096ddeb13d"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1178,6 +1179,7 @@ dependencies = [
 [[package]]
 name = "buzz-paired-owner"
 version = "0.1.0"
+source = "git+https://github.com/Shipitrealgood/buzz.git?rev=0d03b28a3c537409f8a86a30cd1389096ddeb13d#0d03b28a3c537409f8a86a30cd1389096ddeb13d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1219,6 +1221,7 @@ dependencies = [
 [[package]]
 name = "buzz-sdk"
 version = "0.1.0"
+source = "git+https://github.com/Shipitrealgood/buzz.git?rev=0d03b28a3c537409f8a86a30cd1389096ddeb13d#0d03b28a3c537409f8a86a30cd1389096ddeb13d"
 dependencies = [
  "buzz-core",
  "nostr 0.44.8",
@@ -1231,6 +1234,7 @@ dependencies = [
 [[package]]
 name = "buzz-ws-client"
 version = "0.1.0"
+source = "git+https://github.com/Shipitrealgood/buzz.git?rev=0d03b28a3c537409f8a86a30cd1389096ddeb13d#0d03b28a3c537409f8a86a30cd1389096ddeb13d"
 dependencies = [
  "buzz-core",
  "futures-util",

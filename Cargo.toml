@@ -2,9 +2,3 @@
 members = ["crates/agent-command", "crates/pairing", "crates/plugin-manager", "crates/agent-controller", "crates/credential-store", "crates/dev-credential-helper", "src/bundled/mesh-compute/compute", "crates/ifc-core", "crates/buzz-ifc", "crates/nsec-backup", "src-tauri"]
 default-members = ["crates/plugin-manager"]
 resolver = "2"
-
-# Temporary local Option A patch prior to Shipitrealgood/buzz main push + pin bump.
-[patch."https://github.com/Shipitrealgood/buzz.git"]
-buzz-paired-owner = { path = "/home/bryce/services/buzz-wt-m4-paired-owner/crates/buzz-paired-owner" }
-buzz-ws-client = { path = "/home/bryce/services/buzz-wt-m4-paired-owner/crates/buzz-ws-client" }
-buzz-core = { path = "/home/bryce/services/buzz-wt-m4-paired-owner/crates/buzz-core" }

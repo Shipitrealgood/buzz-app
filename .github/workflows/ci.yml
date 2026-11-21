@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       recovery_only:
-        description: Build Buzz and run the finite native host recovery gate
+        description: Build Buzz and test native host recovery and Create
         type: boolean
         default: false
   pull_request:
@@ -226,6 +226,9 @@ jobs:
             'relay::registered_hosts::tests::ready_identity_refuses_wrong_owner_closed_identity_and_noncanonical_origin',
             'relay::registered_hosts::tests::journal_is_private_exclusive_and_reopenable',
             'relay::registered_hosts::tests::signed_read_recovers_and_reopens_without_runtime_readiness_or_inventory_writes',
+            'relay::registered_hosts::tests::provision_replays_same_identity_and_refuses_host_or_runtime_mismatch',
+            'relay::registered_hosts::tests::selected_model_activates_and_retries_without_redeploying',
+            'relay::registered_hosts::tests::failed_first_launch_retries_on_the_original_identity',
             'tests::every_registered_command_is_listed_and_allowed'
           )
           foreach ($case in $cases) {
@@ -235,7 +238,9 @@ jobs:
           $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json -AsHashtable
           if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata failed' }
           $owner = @($metadata.packages | Where-Object { $_['name'] -eq 'buzz-paired-owner' })
-          if ($owner.Count -ne 1 -or $owner[0].source -notlike '*#78232d95173b876babcee0f51b18f7c2a17dac0d') { throw 'Unexpected owner source' }
+          $ownerRevision = '0d03b28a3c537409f8a86a30cd1389096ddeb13d'
+          $expectedSource = "git+https://github.com/Shipitrealgood/buzz.git?rev=$ownerRevision#$ownerRevision"
+          if ($owner.Count -ne 1 -or $owner[0].source -cne $expectedSource) { throw 'Unexpected owner source' }
           $probe = Join-Path (Split-Path $owner[0].manifest_path) 'windows/test-journal-acl.ps1'
           $owner[0].source | Add-Content "$evidence/source.txt"
           Get-FileHash $probe -Algorithm SHA256 | Format-List | Out-File "$evidence/acl-source.txt"
@@ -245,7 +250,7 @@ jobs:
           if ((Get-Content "$evidence/acl.log" -Raw) -notmatch 'another standard user read the control and was denied the DB, WAL and SHM') { throw 'Missing ACL completion evidence' }
           "| Shared ACL: control read, DB/WAL/SHM denied | 1 | $([math]::Round($watch.Elapsed.TotalSeconds, 2)) |" >> $env:GITHUB_STEP_SUMMARY
           Copy-Item target/debug/Buzz.exe "$evidence/Buzz.exe"
-          "Source: $revision. Four recovery cases, one manifest case, one shared ACL probe. Debug binary compiled; app not launched." >> $env:GITHUB_STEP_SUMMARY
+          "Source: $revision. Ran $($cases.Count) exact app tests and one shared ACL probe. Debug binary compiled; app not launched." >> $env:GITHUB_STEP_SUMMARY
       - name: Windows recovery evidence
         if: ${{ always() && inputs.recovery_only }}
         shell: pwsh
