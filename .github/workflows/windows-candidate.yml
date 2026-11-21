@@ -21,6 +21,6 @@ jobs:
       id-token: write
     with:
       candidates: true
-      # Verify the installed GUI under a standard Windows user before uploading.
+      # Verify the GUI from the NSIS payload under a standard Windows user before uploading.
       verify_registered_hosts: true
       preview_version: 1.0.7-preview.${{ github.run_number }}
