@@ -368,7 +368,7 @@ export function createRegisteredHostType(
       },
     ],
     remote: {
-      async validateRetry(saved, next, signal) {
+      async resumeProvision(saved, next, signal) {
         const retained = saved as HostedAgentConfig | undefined;
         const draft = await currentChoice(next, signal);
         if (

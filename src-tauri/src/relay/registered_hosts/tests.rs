@@ -792,10 +792,14 @@ async fn hosted_lifecycle(requires_retry: bool) {
                         }
                         other => panic!("unexpected mode {other}"),
                     };
-                    ops_srv
-                        .lock()
-                        .unwrap()
-                        .insert(authority.operation_id.clone(), entry);
+                    assert!(
+                        ops_srv
+                            .lock()
+                            .unwrap()
+                            .insert(authority.operation_id.clone(), entry)
+                            .is_none(),
+                        "duplicate host effect"
+                    );
                     ws.send(json!(["OK", ev.id, true, ""]).to_string().into())
                         .await
                         .unwrap();
@@ -883,17 +887,73 @@ async fn hosted_lifecycle(requires_retry: bool) {
     .is_err());
     assert!(kind0_events.lock().unwrap().is_empty());
     assert!(ops.lock().unwrap().is_empty());
-    let first = provider::activate_inner(
+    if requires_retry {
+        let needs_login = provider::activate_inner(
+            &session,
+            device,
+            &mut mgmt,
+            input(nip_oa_1.clone(), Some("claude-sonnet")),
+            Some(&k0_url),
+        )
+        .await
+        .unwrap_err();
+        assert!(needs_login.to_string().contains("needs-login"));
+    }
+    // Interrupt after the first command is retained (phase 0), or after its
+    // continuation reaches phase 1. Reopen the real journal before retrying.
+    let stopped_phase = u8::from(requires_retry);
+    let fixture =
+        rusqlite::Connection::open(root.path().join("registered-hosts-v1/owner.sqlite")).unwrap();
+    fixture
+        .execute_batch(&format!(
+            "CREATE TRIGGER interrupt_phase BEFORE UPDATE OF data ON deployment_intents
+        WHEN json_extract(NEW.data, '$.phase') = {} AND json_extract(OLD.data, '$.phase') = {}
+        BEGIN SELECT RAISE(ABORT, 'fixture interrupted'); END;",
+            stopped_phase + 1,
+            stopped_phase
+        ))
+        .unwrap();
+    let mut interrupted_input = input(nip_oa_1.clone(), Some("claude-sonnet"));
+    if requires_retry {
+        interrupted_input.effort = Some("high".into());
+    }
+    let interrupted = provider::activate_inner(
         &session,
         device,
         &mut mgmt,
-        input(nip_oa_1.clone(), Some("claude-sonnet")),
+        interrupted_input,
         Some(&k0_url),
     )
-    .await;
-    assert_eq!(first.is_err(), requires_retry, "{first:?}");
-    assert_eq!(ops.lock().unwrap().len(), 1);
+    .await
+    .unwrap_err();
+    assert!(
+        interrupted.to_string().contains("fixture interrupted"),
+        "{interrupted}"
+    );
+    fixture
+        .execute_batch("DROP TRIGGER interrupt_phase")
+        .unwrap();
+    drop(fixture);
+    let retained_id = device
+        .reservation(COMMUNITY, &owner, &agent_pk)
+        .unwrap()
+        .unwrap()
+        .operation_id
+        .unwrap();
+    let retained = device
+        .deployment_intent(COMMUNITY, &owner, &retained_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.phase, stopped_phase);
+    assert_eq!(
+        retained.protected.authority.expected_revision,
+        u64::from(requires_retry)
+    );
+    assert_eq!(ops.lock().unwrap().len(), usize::from(requires_retry));
     assert_eq!(kind0_events.lock().unwrap().len(), 1);
+    drop(journal);
+    let mut journal = Journal::open(root.path()).unwrap();
+    let device = journal.device.as_mut().unwrap();
     let nip_oa_2: [String; 4] = identity
         .authorize_agent(owner.public_key().to_hex(), prov.pubkey.clone())
         .await
@@ -916,6 +976,21 @@ async fn hosted_lifecycle(requires_retry: bool) {
         if requires_retry { 2 } else { 1 }
     );
     assert_eq!(kind0_events.lock().unwrap().len(), 1);
+    assert_eq!(ops.lock().unwrap()[&retained_id]["event"], retained.event);
+    assert_eq!(
+        device.deployment_intents(COMMUNITY, &owner).unwrap().len(),
+        if requires_retry { 2 } else { 1 }
+    );
+    assert_eq!(
+        device
+            .reservation(COMMUNITY, &owner, &agent_pk)
+            .unwrap()
+            .unwrap()
+            .config
+            .effort
+            .as_deref(),
+        requires_retry.then_some("high")
+    );
     // 3. Profile rename publishes agent-signed kind 0 without redeploy
     provider::profile_inner(
         &session,

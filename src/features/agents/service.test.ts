@@ -17415,7 +17415,10 @@ it("retries registered-host activation with the original identity and protects t
     recover: vi.fn(),
     status: vi.fn(),
     models: vi.fn(),
-    provision: vi.fn(async () => ({ pubkey: hostedKey })),
+    provision: vi.fn(async () => ({
+      pubkey: hostedKey,
+      picture: "https://example.test/provisioned.png",
+    })),
     activate: vi
       .fn()
       .mockRejectedValueOnce(new Error("Host unavailable"))
@@ -17440,7 +17443,16 @@ it("retries registered-host activation with the original identity and protects t
   await expect(
     service.create({ ...draft, config: { ...config, host: "d".repeat(64) } }),
   ).rejects.toThrow("original host");
-  const agent = await service.create(draft);
+  const agent = await service.create({
+    ...draft,
+    picture: "https://example.test/new-random-avatar.png",
+  });
+  expect(agent.picture).toBe("https://example.test/provisioned.png");
+  expect(records.publish).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ picture: agent.picture }),
+    expect.any(AbortSignal),
+  );
   expect(agent.pubkey).toBe(hostedKey);
   expect(agent.unfinished).toBeUndefined();
   expect(hosts.provision).toHaveBeenCalledTimes(1);

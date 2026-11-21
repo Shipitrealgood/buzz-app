@@ -80,6 +80,7 @@ export function AgentCreateDialog({
   onCreate,
   update,
   loadRegisteredHosts,
+  registeredHostScope,
 }: {
   agents: Agents;
   types: readonly RegisteredAgentType[];
@@ -97,6 +98,7 @@ export function AgentCreateDialog({
     request: AgentUpdateRequest;
     onSave(input: NewAgent): Promise<void>;
   }>;
+  registeredHostScope?: string;
   loadRegisteredHosts?: (
     signal: AbortSignal,
   ) => Promise<readonly RegisteredHost[]>;
@@ -161,7 +163,11 @@ export function AgentCreateDialog({
       : config;
   };
   const [config, setConfig] = useState(() => seed(type));
-  const [hosts, setHosts] = useState<readonly RegisteredHost[]>([]);
+  const [directory, setDirectory] = useState({
+    scope: registeredHostScope,
+    hosts: [] as readonly RegisteredHost[],
+  });
+  const { hosts } = directory;
   const [runOn, setRunOn] = useState("local");
   useEffect(() => {
     if (update || !open || !registeredHostType || !loadRegisteredHosts) return;
@@ -169,12 +175,21 @@ export function AgentCreateDialog({
     void loadRegisteredHosts(controller.signal).then(
       (next) => {
         if (!controller.signal.aborted)
-          setHosts(next.filter((h) => h.registration === "registered"));
+          setDirectory({
+            scope: registeredHostScope,
+            hosts: next.filter((h) => h.registration === "registered"),
+          });
       },
       () => {},
     );
     return () => controller.abort();
-  }, [update, open, registeredHostType, loadRegisteredHosts]);
+  }, [
+    update,
+    open,
+    registeredHostScope,
+    registeredHostType,
+    loadRegisteredHosts,
+  ]);
   const preview = migration(type);
   const [dirty, setDirty] = useState(Boolean(update));
   const [pending, setPending] = useState(false);
@@ -274,13 +289,31 @@ export function AgentCreateDialog({
         : base,
     );
   };
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
+  // Switching relay generation invalidates only the registered-host placement.
+  if (directory.scope !== registeredHostScope) {
+    setDirectory({ scope: registeredHostScope, hosts: [] });
+    if (runOn !== "local") {
+      const local = localTypes[0];
+      const carried = type?.carry?.(config);
+      setRunOn("local");
+      setTypeKey(local?.key ?? "");
+      setConfig(
+        carried && local?.adopt
+          ? local.adopt(carried, seed(local, false))
+          : seed(local, false),
+      );
+      setConfigurationReady(false);
+      setPending(false);
+      setError("");
+    }
+  }
+  const live = useRef<{ hostScope: string | undefined } | null>(null);
+  useLayoutEffect(() => {
+    live.current = { hostScope: registeredHostScope };
     return () => {
-      mounted.current = false;
+      live.current = null;
     };
-  }, []);
+  }, [registeredHostScope]);
   const create = async (introduced = false) => {
     if (!type || pending || avatarBusy || !canCreate) return;
     if (!name.trim()) {
@@ -296,13 +329,16 @@ export function AgentCreateDialog({
       setShowRemoteIntro(true);
       return;
     }
+    const from = live.current;
+    const current = () =>
+      live.current && (runOn === "local" || live.current === from);
     setPending(true);
     setError("");
     try {
       const picture =
         (await avatarRef.current?.prepare()) ??
         (avatar.kind === "emoji" ? "" : avatar.picture);
-      if (!mounted.current) return;
+      if (!current()) return;
       const input = {
         type: type.key,
         name: name.trim(),
@@ -315,9 +351,10 @@ export function AgentCreateDialog({
         const created = await (onCreate
           ? onCreate(input)
           : agents.create(input));
-        if (mounted.current) onCreated(created);
+        if (current()) onCreated(created);
       }
     } catch (reason) {
+      if (!current()) return;
       setError(message(reason));
       setPending(false);
     }

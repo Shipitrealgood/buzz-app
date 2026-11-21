@@ -14,7 +14,7 @@ use buzz_core::{
     private_managed_agent::{validate_auth_tag, PrivateIdentity},
 };
 use buzz_paired_owner::deployment::{
-    operation_error_category, ContinueDeploy, Management, Operation, Reservation,
+    operation_error_category, ContinueDeploy, Intent, Management, Operation, Reservation,
     ReservationConfig, ReservationState::*, ReserveAgent,
 };
 use buzz_paired_owner::{registry::Registry, Device};
@@ -349,11 +349,14 @@ impl<'a, 'b> OpCtx<'a, 'b> {
         }
         self.read_op(id).await
     }
-    async fn dispatch_poll(&mut self, id: &str) -> Result<Operation> {
-        let c = self.s.community.as_str();
-        self.d.deployment_advance(c, &self.k, id, 1)?;
-        self.d.deployment_advance(c, &self.k, id, 2)?;
-        self.d.mark_reservation_prepared(c, &self.k, &self.pk, id)?;
+    async fn dispatch_poll(&mut self, intent: &Intent) -> Result<Operation> {
+        let id = &intent.protected.authority.operation_id;
+        // The reservation already names this intent, even if the process stopped
+        // before recording either the materialization or profile-publication phase.
+        for phase in intent.phase + 1..=2 {
+            self.d
+                .deployment_advance(&self.s.community, &self.k, id, phase)?;
+        }
         self.m.dispatch(self.d, &|| self.s.keys(), id).await?;
         self.poll_op(id).await
     }
@@ -542,9 +545,8 @@ pub(super) async fn activate_inner(
         let intent = ctx
             .d
             .prepare_deployment(&ctx.s.community, &ctx.k, auth, &cmd, &st, snap)?;
-        let op_id = intent.protected.authority.operation_id;
-        let op = ctx.dispatch_poll(&op_id).await?;
-        return ctx.finish_applied(&op_id, &op, None);
+        let op = ctx.dispatch_poll(&intent).await?;
+        return ctx.finish_applied(&intent.protected.authority.operation_id, &op, None);
     }
 
     let op_id = res.operation_id.as_deref().context("missing operation")?;
@@ -568,11 +570,10 @@ pub(super) async fn activate_inner(
         );
         return Ok(());
     }
-    if !op.admitted && prior.phase == 2 && prior.protected.authority.expires_at > now_secs()? {
+    if !op.admitted && prior.phase <= 2 && prior.protected.authority.expires_at > now_secs()? {
         ensure!(retained_model.is_some() && model == retained_model,
             "The retained deployment has a different model. Retry the original selection or remove the unfinished agent.");
-        ctx.m.dispatch(ctx.d, &|| ctx.s.keys(), op_id).await?;
-        op = ctx.poll_op(op_id).await?;
+        op = ctx.dispatch_poll(&prior).await?;
     } else if op.state == "pending" {
         op = ctx.poll_op(op_id).await?;
     }
@@ -583,7 +584,8 @@ pub(super) async fn activate_inner(
             model.is_none_or(|id| Some(id) == retained_model),
             "This agent already has a retained model. Retry the original selection."
         );
-        return ctx.finish_applied(op_id, &op, None);
+        let retained_effort = serde_json::from_value(snapshot["record"]["effort"].clone())?;
+        return ctx.finish_applied(op_id, &op, Some(retained_effort));
     }
     let model = model.context(
         "Choose a current host model in Create agent using this agent’s original name and harness.",
@@ -608,9 +610,12 @@ pub(super) async fn activate_inner(
             },
         )
         .await?;
-    let next_id = next.protected.authority.operation_id;
-    let settled = ctx.dispatch_poll(&next_id).await?;
-    ctx.finish_applied(&next_id, &settled, Some(i.effort))
+    let settled = ctx.dispatch_poll(&next).await?;
+    ctx.finish_applied(
+        &next.protected.authority.operation_id,
+        &settled,
+        Some(i.effort),
+    )
 }
 
 pub(super) async fn profile_inner(

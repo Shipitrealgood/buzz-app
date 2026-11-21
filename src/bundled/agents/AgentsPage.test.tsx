@@ -1237,9 +1237,9 @@ it("saves a reviewed provider change with the destination settings", async () =>
   ).toBeVisible();
 });
 
-it("makes a new agent in the create dialog and goes straight to building it", async () => {
+it("keeps a local Create draft through a relay reconnect and goes straight to building it", async () => {
   const user = userEvent.setup();
-  const { agents } = setup([agent("Ada", 1)]);
+  const { agents, relay, rerender } = setup([agent("Ada", 1)]);
   await user.click(screen.getByRole("button", { name: "New agent" }));
   await user.click(
     await screen.findByRole("menuitem", { name: "Create a new agent" }),
@@ -1250,6 +1250,14 @@ it("makes a new agent in the create dialog and goes straight to building it", as
   ).toHaveTextContent("Echo");
   await user.type(within(dialog).getByLabelText("Reply"), "Hi there");
   await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  const reconnected = {
+    ...relay.snapshot(),
+    generation: relay.snapshot().generation + 1,
+  };
+  relay.snapshot = () => reconnected;
+  rerender(<AgentsPage agents={agents} relay={relay} />);
+  expect(screen.getByLabelText("Name")).toHaveValue("Nova");
+  expect(screen.getByLabelText("Reply")).toHaveValue("Hi there");
   await user.click(screen.getByRole("button", { name: "Create agent" }));
   expect(agents.create).toHaveBeenCalledWith({
     type: "test/echo",

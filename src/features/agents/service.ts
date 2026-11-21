@@ -979,8 +979,9 @@ export type AgentType<Config = unknown> = {
  * the owner's agent list; every step is asked again after a failure, so each
  * must be safe to repeat. `community` is the agent's `wss://` community. */
 export type RemoteAgentType = Readonly<{
-  /** Check a replacement draft before updating this provider's retained setup. */
-  validateRetry?(
+  /** Resumes an already provisioned identity with its provisioned picture.
+   * Reject incompatible replacement configuration before saving the draft. */
+  resumeProvision?(
     saved: unknown,
     next: unknown,
     signal: AbortSignal,
@@ -3392,20 +3393,21 @@ export class AgentsService extends Service implements Agents {
           setup.owner === binding.viewer,
       );
       if (pending) {
-        if (config !== undefined && remote.validateRetry)
-          await remote.validateRetry(
+        if (config !== undefined && remote.resumeProvision)
+          await remote.resumeProvision(
             pending.config,
             config,
             binding.controller.signal,
           );
-        if (config !== undefined || listed)
+        const retryPicture = remote.resumeProvision ? undefined : listed;
+        if (config !== undefined || retryPicture)
           await this.writeUnfinished(
             this.unfinished.map((setup) =>
               setup === pending
                 ? {
                     ...setup,
                     ...(config !== undefined ? { config } : {}),
-                    ...(listed ? { picture: listed } : {}),
+                    ...(retryPicture ? { picture: retryPicture } : {}),
                   }
                 : setup,
             ),

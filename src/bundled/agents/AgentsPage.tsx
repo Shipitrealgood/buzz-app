@@ -985,7 +985,7 @@ export function AgentsPage({
       )}
       {creating && (
         <AgentCreateDialog
-          key={JSON.stringify([
+          registeredHostScope={JSON.stringify([
             connection.generation,
             connection.viewer,
             connection.origin,

@@ -1795,8 +1795,9 @@ async function hostedForm() {
     create: vi.fn().mockResolvedValue({ pubkey: "11".repeat(32) }),
   };
   const onClose = vi.fn();
-  const view = render(
+  const form = (scope: string) => (
     <AgentCreateDialog
+      registeredHostScope={scope}
       agents={agents as unknown as Agents}
       types={[notes as RegisteredAgentType, hosted]}
       loadRegisteredHosts={async () => [
@@ -1810,8 +1811,10 @@ async function hostedForm() {
       ]}
       onClose={onClose}
       onCreated={vi.fn()}
-    />,
+    />
   );
+  const view = render(form("initial"));
+  const reconnect = () => view.rerender(form("reconnected"));
   const user = userEvent.setup();
   const select = async (label: string, option: string) => {
     await user.click(await screen.findByRole("combobox", { name: label }));
@@ -1819,7 +1822,17 @@ async function hostedForm() {
   };
   await user.type(screen.getByLabelText("Name"), "Sky");
   await select("Run on", "Example host");
-  return { hosts, agents, placement, revision, select, user, view, onClose };
+  return {
+    hosts,
+    agents,
+    placement,
+    revision,
+    select,
+    user,
+    view,
+    onClose,
+    reconnect,
+  };
 }
 
 it("uses only the latest harness catalog and creates the selected host model in one click", async () => {
@@ -1898,6 +1911,29 @@ it("drops discovery after switching back to local or closing the draft, without 
   view.unmount();
   await act(async () => pending[1]?.(hostModels("late")));
   expect(hosts.models.mock.calls[1]?.[1].aborted).toBe(true);
+  expect(agents.create).not.toHaveBeenCalled();
+  expect(hosts.provision).not.toHaveBeenCalled();
+  expect(hosts.activate).not.toHaveBeenCalled();
+});
+
+it("discards a registered-host selection and its pending model read on reconnect", async () => {
+  const { hosts, agents, select, reconnect } = await hostedForm();
+  let resolve!: (value: ReturnType<typeof hostModels>) => void;
+  hosts.models.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  await select("Harness", "Codex");
+  reconnect();
+  expect(hosts.models.mock.calls[0]?.[1].aborted).toBe(true);
+  await act(async () => resolve(hostModels("late")));
+  expect(screen.getByRole("combobox", { name: "Run on" })).toHaveTextContent(
+    "This computer",
+  );
+  expect(screen.getByLabelText("Name")).toHaveValue("Sky");
+  expect(screen.queryByText("late")).not.toBeInTheDocument();
   expect(agents.create).not.toHaveBeenCalled();
   expect(hosts.provision).not.toHaveBeenCalled();
   expect(hosts.activate).not.toHaveBeenCalled();
