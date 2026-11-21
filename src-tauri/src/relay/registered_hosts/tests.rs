@@ -123,10 +123,16 @@ fn journal_rejects_links_and_insecure_permissions() {
 // replies and Device recovery. Only the remote relay is replaced by loopback.
 #[tokio::test]
 async fn signed_read_recovers_and_reopens_without_runtime_readiness_or_inventory_writes() {
+    for requires_fi in [false, true] {
+        signed_read_over_wss(requires_fi).await;
+    }
+}
+
+async fn signed_read_over_wss(requires_fi: bool) {
     use crate::federated_identity::testing::{community_at, reply};
 
     // Registry scopes require a DNS name, even on the loopback relay.
-    let community = community_at(true, "localhost").await;
+    let community = community_at(requires_fi, "localhost").await;
     let origin = community.origin.origin().ascii_serialization();
     let owner = keys(1);
     let host = keys(2);
