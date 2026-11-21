@@ -160,7 +160,20 @@ jobs:
           key: native
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Dependency policy
-        run: ./bin/cargo-deny --locked check
+        shell: bash
+        run: |
+          ./bin/cargo-deny --locked check
+          # Bound the RUSTSEC-2024-0384 exception to the reviewed instant version.
+          ./bin/cargo tree --locked --workspace --all-features --target all --prefix none --color never |
+            awk '$1 == "instant" && $2 != "v0.1.13" { print "Review RUSTSEC-2024-0384 for " $0; failed=1 } END { exit failed }'
+      # Build dependencies resolve for the host. Run this check on each native runner.
+      - name: Native dependency policy
+        shell: bash
+        env:
+          TARGET: x86_64-unknown-linux-gnu
+        run: &check_native_instant |
+          cargo tree --locked -p Buzz --all-features --target "$TARGET" --edges normal,build --prefix none --color never |
+            awk -v target="$TARGET" '$1 == "instant" { print "Buzz on " target " depends on " $0; failed=1 } END { exit failed }'
       - name: Rust formatting
         run: ./bin/cargo fmt --all --check
       - name: Rust lint
@@ -217,6 +230,11 @@ jobs:
         with:
           key: windows-native
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Native dependency policy
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
+        run: *check_native_instant
       - name: Native lint including Windows backend
         if: ${{ !inputs.recovery_only }}
         run: cargo clippy -p Buzz -p buzz-agent-controller -p buzz-credential-store -p buzz-mesh-compute --locked --all-targets -- -D warnings

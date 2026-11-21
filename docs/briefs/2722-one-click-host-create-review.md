@@ -55,3 +55,11 @@ The merge integrates upstream `e567ac6f57a33332e43b72d6e9e04f8f30af7ddc` into th
 - Cargo resolved the public owner from the upstream lock and retained zip 9.2.2. The all-target dependency check found one error, RUSTSEC-2024-0384 for instant 0.1.13. The locked Cargo trees for Windows x86-64 and Linux x86-64 contain no normal or build dependency on instant. The all-target tree has one immediate dependent, nostr 0.44.8, which requires instant on wasm32.
 
 The four affected Vitest files passed 1,022 tests with one conditional skip. TypeScript, scoped Biome, Rust format and the upstream-relative whitespace check passed. The Linux checkout lacks GLib, GTK 3 and WebKitGTK 4.1 development metadata. Native execution, rendered desktop verification and a real host Create need their own evidence.
+
+## Dependency-policy review after b2653308
+
+Review the single RUSTSEC-2024-0384 entry in `deny.toml` and the Linux and Windows dependency-policy steps in `.github/workflows/ci.yml`. Cargo-deny 0.19.9 accepts an advisory ID and reason. The all-target workspace check restricts the exception to instant 0.1.13. Each native job rejects every instant version in Buzz's locked normal and build dependencies, including optional features. The Bash shell's pipefail setting propagates Cargo errors through awk.
+
+- Full `./bin/cargo-deny --locked check` passed advisories, bans, licenses and sources against advisory database `f291af9b1cc0d21dfcea1709d6b037963cef262b`. The all-target version check and both target graph queries passed on Linux.
+- Running the native step against the real wasm32 graph reported instant 0.1.13 and exited 1. Changing the allowed version to 0.1.12 in a test copy also exited 1. Selecting a missing workspace package propagated Cargo's exit status 101.
+- Run the Windows job on this revision. A Linux-hosted Windows query omitted a fixture's Windows-only dependency nested under a build dependency. Running the guard on the Windows runner checks that host-specific path. The eight recovery cases and the shared ACL probe compare identically to the merge baseline.

@@ -53,6 +53,9 @@ ignore = [
     # proc macro: tauri → gtk 0.18 → glib-macros/gtk3-macros.
     # Remove when tauri's Linux stack leaves gtk-rs 0.18.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via tauri → gtk 0.18 → glib-macros/gtk3-macros; unmaintained, not vulnerable" },
+    # CI checks the accepted version and excludes instant from Windows and Linux
+    # native Buzz builds. Remove this exception when nostr drops instant.
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is unmaintained; nostr 0.44.8 uses it only on wasm32" },
 ]
 
 [licenses]
