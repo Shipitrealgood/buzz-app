@@ -1,9 +1,18 @@
 # Runs on the disposable Windows candidate builder after the NSIS install.
 $ErrorActionPreference = 'Stop'
 $dest = "$env:RUNNER_TEMP\candidate-install"
-$installed = (Get-FileHash "$dest\Buzz.exe").Hash
-if ($installed -ne (Get-FileHash 'target/release/Buzz.exe').Hash) {
-  throw 'Installed executable differs from the release build'
+# Tauri patches the GUI for NSIS, then restores the unpatched target/release copy.
+$installers = @(Get-ChildItem target/release/bundle/nsis/*.exe -File)
+if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+$payload = [IO.Directory]::CreateTempSubdirectory('buzz-nsis-')
+try {
+  & 7z.exe x -tNSIS -r- -y -bso0 -bsp0 "-o$($payload.FullName)" $installers[0].FullName Buzz.exe
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the packaged GUI executable' }
+  if ((Get-FileHash "$dest\Buzz.exe").Hash -ne (Get-FileHash "$($payload.FullName)\Buzz.exe").Hash) {
+    throw 'Installed executable differs from the NSIS payload'
+  }
+} finally {
+  $payload.Delete($true)
 }
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $listener.Start()
